@@ -64,7 +64,7 @@ pub async fn handle(State(state): State<AppState>, uri: Uri) -> Result<Response,
     let ext = file_extension(&fs_path);
 
     match ext.as_deref() {
-        Some("md") => serve_markdown(&state, &fs_path).await,
+        Some("md") => serve_markdown(&state, &fs_path, &decoded).await,
         Some(e) if STATIC_EXTENSIONS.contains(&e) => serve_static(&state, &fs_path).await,
         _ => {
             // No or unrecognized extension — try appending .md for clean URLs.
@@ -73,7 +73,7 @@ pub async fn handle(State(state): State<AppState>, uri: Uri) -> Result<Response,
                 .await
                 .map_err(AppError::Io)?
             {
-                serve_markdown(&state, &md_path).await
+                serve_markdown(&state, &md_path, &decoded).await
             } else {
                 Err(AppError::NotFound)
             }
@@ -81,7 +81,11 @@ pub async fn handle(State(state): State<AppState>, uri: Uri) -> Result<Response,
     }
 }
 
-async fn serve_markdown(state: &AppState, fs_path: &Path) -> Result<Response, AppError> {
+async fn serve_markdown(
+    state: &AppState,
+    fs_path: &Path,
+    url_path: &str,
+) -> Result<Response, AppError> {
     let real_path = validate_path(state, fs_path).await?;
     let raw = tokio::fs::read_to_string(&real_path).await.map_err(io_err)?;
 
@@ -93,7 +97,8 @@ async fn serve_markdown(state: &AppState, fs_path: &Path) -> Result<Response, Ap
 
     let html_body = render_markdown(&content);
     let css = find_css(&state.canonical_root, &real_path).await;
-    let markup = template::page(&front_matter, &html_body, css.as_deref());
+    let breadcrumbs = template::build_breadcrumbs(url_path);
+    let markup = template::page(&front_matter, &html_body, css.as_deref(), &breadcrumbs);
 
     Ok(Html(markup.into_string()).into_response())
 }
@@ -108,7 +113,7 @@ async fn serve_directory(
     // Prefer index.md if present.
     let index_md = real_path.join("index.md");
     if tokio::fs::try_exists(&index_md).await.unwrap_or(false) {
-        return serve_markdown(state, &index_md).await;
+        return serve_markdown(state, &index_md, url_path).await;
     }
 
     let mut read_dir = tokio::fs::read_dir(&real_path).await.map_err(io_err)?;
