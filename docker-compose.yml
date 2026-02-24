@@ -63,6 +63,8 @@ services:
     depends_on:
       md-server:
         condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
 volumes:
   caddy_data: null
   caddy_config: null
