@@ -11,6 +11,7 @@ use crate::{
     css::find_css,
     error::AppError,
     front_matter::{self, ParsedDoc},
+    rss,
     state::AppState,
     template::{self, DirEntry},
 };
@@ -66,6 +67,18 @@ pub async fn handle(State(state): State<AppState>, uri: Uri) -> Result<Response,
     match ext.as_deref() {
         Some("md") => serve_markdown(&state, &fs_path, &decoded).await,
         Some(e) if STATIC_EXTENSIONS.contains(&e) => serve_static(&state, &fs_path).await,
+        Some("xml") => {
+            let stem = fs_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase());
+            if matches!(stem.as_deref(), Some("feed") | Some("rss")) {
+                let dir_path = fs_path.parent().unwrap_or(&fs_path);
+                serve_rss(&state, dir_path, &decoded).await
+            } else {
+                Err(AppError::NotFound)
+            }
+        }
         _ => {
             // No or unrecognized extension — try appending .md for clean URLs.
             let md_path = fs_path.with_extension("md");
@@ -99,7 +112,10 @@ async fn serve_markdown(
 
     let html_body = render_markdown(&content);
     let css = find_css(&state.canonical_root, &real_path).await;
-    let breadcrumbs = template::build_breadcrumbs(url_path);
+    let mut breadcrumbs = template::build_breadcrumbs(url_path);
+    if let (Some(last), Some(title)) = (breadcrumbs.last_mut(), front_matter.title.as_deref()) {
+        last.label = title.to_string();
+    }
     let markup = template::page(&front_matter, &html_body, css.as_deref(), &breadcrumbs);
 
     Ok(Html(markup.into_string()).into_response())
@@ -118,79 +134,9 @@ async fn serve_directory(
         return serve_markdown(state, &index_md, url_path).await;
     }
 
-    let mut read_dir = tokio::fs::read_dir(&real_path).await.map_err(io_err)?;
-    let mut entries: Vec<DirEntry> = Vec::new();
-    let base_url = url_path.trim_end_matches('/');
-
-    while let Some(entry) = read_dir.next_entry().await.map_err(AppError::Io)? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
-            continue;
-        }
-
-        let entry_path = entry.path();
-        let file_type = match entry.file_type().await {
-            Ok(ft) => ft,
-            Err(e) => {
-                tracing::warn!("Cannot stat {}: {}", entry_path.display(), e);
-                continue;
-            }
-        };
-
-        if file_type.is_dir() {
-            let dir_url = format!("{}/{}/", base_url, name);
-            let date = front_matter::infer_date(&entry_path).await;
-            let (title, summary, author) = read_index_metadata(&entry_path).await;
-            entries.push(DirEntry {
-                display_name: name,
-                url: dir_url,
-                is_dir: true,
-                title,
-                date,
-                summary,
-                author,
-            });
-        } else if file_type.is_file() {
-            let Some(stem) = md_stem(&name) else {
-                continue;
-            };
-            if stem == "index" {
-                continue;
-            }
-
-            let file_url = format!("{}/{}", base_url, stem);
-            let raw = tokio::fs::read_to_string(&entry_path)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Cannot read {}: {}", entry_path.display(), e);
-                    String::new()
-                });
-
-            let ParsedDoc {
-                mut front_matter,
-                content,
-            } = front_matter::parse(&raw);
-            front_matter::fill_inferred(&mut front_matter, &content, &entry_path).await;
-
-            entries.push(DirEntry {
-                display_name: stem.to_string(),
-                url: file_url,
-                is_dir: false,
-                title: front_matter.title,
-                date: front_matter.date,
-                summary: front_matter.summary,
-                author: front_matter.author,
-            });
-        }
-    }
-
-    // Sort by date descending; undated entries last, sorted alphabetically.
-    entries.sort_unstable_by(|a, b| match (&b.date, &a.date) {
-        (Some(bd), Some(ad)) => bd.cmp(ad),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.display_name.cmp(&b.display_name),
-    });
+    let url_prefix = url_path.trim_end_matches('/');
+    let mut entries = collect_dir_entries(&real_path, url_prefix).await?;
+    sort_entries(&mut entries);
 
     let display_path = if url_path.is_empty() { "/" } else { url_path };
     let css = find_css(&state.canonical_root, &real_path).await;
@@ -219,7 +165,122 @@ async fn serve_static(state: &AppState, fs_path: &Path) -> Result<Response, AppE
         .map_err(|e| AppError::Internal(e.to_string()))
 }
 
+async fn serve_rss(
+    state: &AppState,
+    dir_path: &Path,
+    feed_url: &str,
+) -> Result<Response, AppError> {
+    let real_path = validate_path(state, dir_path).await?;
+
+    // If the directory has an accessible index.md it's a "page", not a listing — no feed.
+    let index_md_path = real_path.join("index.md");
+    let index_exists = match tokio::fs::canonicalize(&index_md_path).await {
+        Ok(canonical) => canonical.starts_with(&state.canonical_root),
+        Err(_) => false,
+    };
+    if index_exists {
+        return Err(AppError::NotFound);
+    }
+
+    // Derive the directory URL from the feed URL by stripping the filename.
+    let dir_url = match feed_url.rfind('/') {
+        Some(pos) => &feed_url[..=pos],
+        None => "/",
+    };
+    let url_prefix = dir_url.trim_end_matches('/'); // e.g. "/blog"
+
+    let mut entries = collect_dir_entries(&real_path, url_prefix).await?;
+    sort_entries(&mut entries);
+
+    let base_url = state.base_url.as_deref().unwrap_or("");
+    let channel_title = dir_url
+        .trim_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Feed");
+    let channel_link = format!("{}{}", base_url, dir_url);
+
+    let xml = rss::build_feed(channel_title, &channel_link, "", &entries, base_url);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")
+        .body(Body::from(xml))
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Collect directory entries (subdirectories and `.md` files) for `real_path`,
+/// building item URLs relative to `url_prefix` (e.g. `"/blog"`).
+async fn collect_dir_entries(real_path: &Path, url_prefix: &str) -> Result<Vec<DirEntry>, AppError> {
+    let mut read_dir = tokio::fs::read_dir(real_path).await.map_err(io_err)?;
+    let mut entries: Vec<DirEntry> = Vec::new();
+
+    while let Some(entry) = read_dir.next_entry().await.map_err(AppError::Io)? {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+
+        let entry_path = entry.path();
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(e) => {
+                tracing::warn!("Cannot stat {}: {}", entry_path.display(), e);
+                continue;
+            }
+        };
+
+        if file_type.is_dir() {
+            let url = format!("{}/{}/", url_prefix, name);
+            let date = front_matter::infer_date(&entry_path).await;
+            let (title, summary, author) = read_index_metadata(&entry_path).await;
+            entries.push(DirEntry { display_name: name, url, is_dir: true, title, date, summary, author });
+        } else if file_type.is_file() {
+            let Some(stem) = md_stem(&name) else {
+                continue;
+            };
+            if stem == "index" {
+                continue;
+            }
+
+            let url = format!("{}/{}", url_prefix, stem);
+            let raw = tokio::fs::read_to_string(&entry_path)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Cannot read {}: {}", entry_path.display(), e);
+                    String::new()
+                });
+
+            let ParsedDoc { mut front_matter, content } = front_matter::parse(&raw);
+            front_matter::fill_inferred(&mut front_matter, &content, &entry_path).await;
+
+            entries.push(DirEntry {
+                display_name: stem.to_string(),
+                url,
+                is_dir: false,
+                title: front_matter.title,
+                date: front_matter.date,
+                summary: front_matter.summary,
+                author: front_matter.author,
+            });
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Sort entries by date descending; undated entries last, alphabetically within ties.
+fn sort_entries(entries: &mut Vec<DirEntry>) {
+    entries.sort_unstable_by(|a, b| match (&b.date, &a.date) {
+        (Some(bd), Some(ad)) => bd.cmp(ad),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.display_name.cmp(&b.display_name),
+    });
+}
 
 /// Canonicalize `path` (resolving symlinks) and verify it stays within
 /// `state.canonical_root`. Returns the resolved path on success.

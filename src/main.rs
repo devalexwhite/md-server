@@ -2,6 +2,7 @@ mod css;
 mod error;
 mod front_matter;
 mod handler;
+mod rss;
 mod state;
 mod template;
 
@@ -29,6 +30,11 @@ struct Args {
     /// Defaults to a `www` directory adjacent to the server binary.
     #[arg(long, env = "WWW_ROOT")]
     root: Option<PathBuf>,
+
+    /// Base URL prepended to item links in generated RSS feeds (e.g. "https://example.com").
+    /// If unset, RSS item links will be relative paths.
+    #[arg(long, env = "BASE_URL")]
+    base_url: Option<String>,
 }
 
 #[tokio::main]
@@ -67,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         www_root,
         canonical_root,
+        base_url: args.base_url,
     };
 
     // CatchPanicLayer is outermost so it recovers from panics anywhere in the stack.
