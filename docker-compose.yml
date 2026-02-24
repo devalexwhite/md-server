@@ -1,0 +1,41 @@
+services:
+
+  md-server:
+    build: .
+    image: md-server:latest
+    restart: unless-stopped
+    # Not exposed to the host — only reachable by caddy on the internal network.
+    networks:
+      - internal
+    volumes:
+      - ./www:/www:ro          # mount your content directory read-only
+    environment:
+      RUST_LOG: "md_server=info,tower_http=info"
+    # Tighten the container at runtime.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"          # HTTP/3 (QUIC)
+    networks:
+      - internal
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # persists TLS certificates across restarts
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge
