@@ -30,7 +30,8 @@ RUN cargo build --release && \
 # debugging.  A fully static musl binary runs here without any extra libraries.
 FROM alpine:3.21
 
-RUN adduser -D -H -s /sbin/nologin mdserver
+RUN apk add --no-cache wget \
+    && adduser -D -H -s /sbin/nologin mdserver
 
 COPY --from=builder /app/target/release/md-server /usr/local/bin/md-server
 
@@ -42,6 +43,9 @@ USER mdserver
 # Bind only to loopback inside the container; the reverse proxy reaches this
 # via the Docker bridge network, not through an exposed host port.
 EXPOSE 3000
+
+HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/md-server"]
 CMD ["--root", "/www", "--host", "0.0.0.0", "--port", "3000"]

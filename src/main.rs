@@ -6,7 +6,7 @@ mod state;
 mod template;
 
 use anyhow::Context;
-use axum::Router;
+use axum::{http::StatusCode, routing::get, Router};
 use clap::Parser;
 use state::AppState;
 use std::path::PathBuf;
@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
 
     // CatchPanicLayer is outermost so it recovers from panics anywhere in the stack.
     let app = Router::new()
+        .route("/healthz", get(|| async { StatusCode::OK }))
         .fallback(handler::handle)
         .with_state(state)
         .layer(TraceLayer::new_for_http())

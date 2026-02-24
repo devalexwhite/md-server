@@ -1,6 +1,8 @@
 # Replace with your actual domain.  Caddy provisions a Let's Encrypt
 # certificate automatically on first startup — no extra configuration needed.
-yourdomain.com {
+# Set DOMAIN in your environment (or in a .env file next to docker-compose.yml).
+# Example: DOMAIN=example.com
+{$DOMAIN:localhost} {
 
     reverse_proxy md-server:3000
 
