@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{header, StatusCode, Uri},
+    http::{StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect, Response},
 };
 use std::{io, path::Path};
@@ -17,8 +17,8 @@ use crate::{
 
 /// File extensions served as static pass-throughs (not converted to HTML).
 const STATIC_EXTENSIONS: &[&str] = &[
-    "css", "js", "mjs", "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "avif", "woff",
-    "woff2", "ttf", "otf", "eot", "txt", "pdf", "mp4", "webm", "mp3", "ogg", "wav",
+    "css", "js", "mjs", "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "avif", "woff", "woff2",
+    "ttf", "otf", "eot", "txt", "pdf", "mp4", "webm", "mp3", "ogg", "wav",
 ];
 
 pub async fn handle(State(state): State<AppState>, uri: Uri) -> Result<Response, AppError> {
@@ -87,7 +87,9 @@ async fn serve_markdown(
     url_path: &str,
 ) -> Result<Response, AppError> {
     let real_path = validate_path(state, fs_path).await?;
-    let raw = tokio::fs::read_to_string(&real_path).await.map_err(io_err)?;
+    let raw = tokio::fs::read_to_string(&real_path)
+        .await
+        .map_err(io_err)?;
 
     let ParsedDoc {
         mut front_matter,
@@ -269,14 +271,18 @@ async fn read_index_metadata(dir: &Path) -> (Option<String>, Option<String>, Opt
         front_matter.summary = front_matter::infer_summary(&content);
     }
 
-    (front_matter.title, front_matter.summary, front_matter.author)
+    (
+        front_matter.title,
+        front_matter.summary,
+        front_matter.author,
+    )
 }
 
 fn render_markdown(content: &str) -> String {
     let mut opts = markdown::Options::gfm();
+    opts.parse.constructs.frontmatter = false;
     opts.compile.allow_dangerous_html = true;
-    markdown::to_html_with_options(content, &opts)
-        .unwrap_or_else(|_| markdown::to_html(content))
+    markdown::to_html_with_options(content, &opts).unwrap_or_else(|_| markdown::to_html(content))
 }
 
 fn file_extension(path: &Path) -> Option<String> {
