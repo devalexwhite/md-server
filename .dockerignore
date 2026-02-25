@@ -1,8 +1,0 @@
-target/
-.git/
-.gitignore
-*.md
-!CLAUDE.md
-www/
-Caddyfile
-docker-compose.yml
