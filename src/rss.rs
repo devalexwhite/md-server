@@ -1,5 +1,6 @@
 use chrono::NaiveDate;
 
+use crate::handler::render_markdown;
 use crate::template::DirEntry;
 
 /// Build a complete RSS 2.0 feed as an XML string.
@@ -43,7 +44,12 @@ pub fn build_feed(
             permalink_attr,
             esc(&link)
         ));
-        if let Some(summary) = &item.summary {
+        if let Some(md) = &item.content {
+            let html = render_markdown(md);
+            xml.push_str("    <description><![CDATA[");
+            xml.push_str(&html);
+            xml.push_str("]]></description>\n");
+        } else if let Some(summary) = &item.summary {
             xml.push_str(&format!(
                 "    <description>{}</description>\n",
                 esc(summary)
