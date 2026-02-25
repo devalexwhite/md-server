@@ -67,6 +67,7 @@ pub fn page(
     fm: &FrontMatter,
     content_html: &str,
     css_path: Option<&str>,
+    meta_image: Option<&str>,
     breadcrumbs: &[Breadcrumb],
 ) -> Markup {
     let title = fm.title.as_deref().unwrap_or("");
@@ -83,6 +84,11 @@ pub fn page(
                 @if let Some(s) = &fm.summary {
                     meta name="description" content=(s);
                     meta property="og:description" content=(s);
+                }
+                @if let Some(img) = meta_image {
+                    meta property="og:image" content=(img);
+                    meta name="twitter:card" content="summary_large_image";
+                    meta name="twitter:image" content=(img);
                 }
                 @if let Some(a) = &fm.author {
                     meta name="author" content=(a);

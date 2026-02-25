@@ -8,7 +8,7 @@ use std::{io, path::Path};
 use tokio_util::io::ReaderStream;
 
 use crate::{
-    css::find_css,
+    css::{find_css, find_meta_image},
     error::AppError,
     front_matter::{self, ParsedDoc},
     rss,
@@ -112,11 +112,12 @@ async fn serve_markdown(
 
     let html_body = render_markdown(&content);
     let css = find_css(&state.canonical_root, &real_path).await;
+    let meta_image = find_meta_image(&state.canonical_root, &real_path).await;
     let mut breadcrumbs = template::build_breadcrumbs(url_path);
     if let (Some(last), Some(title)) = (breadcrumbs.last_mut(), front_matter.title.as_deref()) {
         last.label = title.to_string();
     }
-    let markup = template::page(&front_matter, &html_body, css.as_deref(), &breadcrumbs);
+    let markup = template::page(&front_matter, &html_body, css.as_deref(), meta_image.as_deref(), &breadcrumbs);
 
     Ok(Html(markup.into_string()).into_response())
 }
