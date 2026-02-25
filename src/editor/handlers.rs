@@ -45,7 +45,7 @@ pub async fn get_analytics(
 
     let (tree, data) = tokio::join!(
         build_file_tree(&state.canonical_root, &state.canonical_root),
-        crate::db::get_analytics_data(&state.db, days),
+        crate::db::get_analytics_data(&state.db, days, state.base_url.as_deref()),
     );
 
     let tree = match tree {

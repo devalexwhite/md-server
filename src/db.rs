@@ -110,7 +110,11 @@ pub async fn get_request_stats(pool: &SqlitePool) -> Result<RequestStats> {
     })
 }
 
-pub async fn get_analytics_data(pool: &SqlitePool, days: i64) -> Result<AnalyticsData> {
+pub async fn get_analytics_data(
+    pool: &SqlitePool,
+    days: i64,
+    own_origin: Option<&str>,
+) -> Result<AnalyticsData> {
     // Compute the cutoff timestamp in Rust and bind it as a parameter to
     // all queries — never interpolate it into SQL strings directly.
     let since: String = if days == 1 {
@@ -207,15 +211,28 @@ pub async fn get_analytics_data(pool: &SqlitePool, days: i64) -> Result<Analytic
     })
     .collect();
 
-    // Top 10 referrers (excluding NULL).
-    let top_referrers = sqlx::query(
-        "SELECT referer, COUNT(*) as count FROM requests \
-         WHERE timestamp >= ? AND referer IS NOT NULL \
-         GROUP BY referer ORDER BY count DESC LIMIT 10",
-    )
-    .bind(&since)
-    .fetch_all(pool)
-    .await?
+    // Top 10 referrers (excluding NULL and self-referrals from own origin).
+    let top_referrers = if let Some(origin) = own_origin.filter(|s| !s.is_empty()) {
+        let prefix = format!("{}%", origin.trim_end_matches('/'));
+        sqlx::query(
+            "SELECT referer, COUNT(*) as count FROM requests \
+             WHERE timestamp >= ? AND referer IS NOT NULL AND referer NOT LIKE ? \
+             GROUP BY referer ORDER BY count DESC LIMIT 10",
+        )
+        .bind(&since)
+        .bind(prefix)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT referer, COUNT(*) as count FROM requests \
+             WHERE timestamp >= ? AND referer IS NOT NULL \
+             GROUP BY referer ORDER BY count DESC LIMIT 10",
+        )
+        .bind(&since)
+        .fetch_all(pool)
+        .await?
+    }
     .into_iter()
     .map(|r| AnalyticsRow {
         label: r.get::<String, _>("referer"),
