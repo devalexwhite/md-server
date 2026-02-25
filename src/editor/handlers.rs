@@ -223,6 +223,15 @@ pub async fn delete_file(
         Err(r) => return r,
     };
 
+    // Refuse to delete the content root itself.
+    if fs_path == state.canonical_root {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<p class='error'>Cannot delete the root directory.</p>".to_string()),
+        )
+            .into_response();
+    }
+
     let meta = match tokio::fs::metadata(&fs_path).await {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -372,9 +381,24 @@ fn io_err_to_response(e: std::io::Error) -> Response {
 
 // ── File tree ─────────────────────────────────────────────────────────────────
 
+const MAX_TREE_DEPTH: usize = 10;
+
 /// Recursively build a file tree under `dir`, rooted at `root`.
 /// Returns nodes sorted: directories first, then files, both alphabetically.
+/// Stops at `MAX_TREE_DEPTH` levels to bound memory and prevent runaway recursion.
 pub async fn build_file_tree(root: &Path, dir: &Path) -> io::Result<Vec<FileNode>> {
+    build_file_tree_inner(root, dir, 0).await
+}
+
+async fn build_file_tree_inner(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+) -> io::Result<Vec<FileNode>> {
+    if depth >= MAX_TREE_DEPTH {
+        return Ok(Vec::new());
+    }
+
     let mut read_dir = tokio::fs::read_dir(dir).await?;
     let mut nodes: Vec<FileNode> = Vec::new();
 
@@ -398,7 +422,7 @@ pub async fn build_file_tree(root: &Path, dir: &Path) -> io::Result<Vec<FileNode
             .replace('\\', "/");
 
         if ft.is_dir() {
-            let children = Box::pin(build_file_tree(root, &path)).await?;
+            let children = Box::pin(build_file_tree_inner(root, &path, depth + 1)).await?;
             nodes.push(FileNode::Dir { name, rel, children });
         } else if ft.is_file() {
             nodes.push(FileNode::File { name, rel });

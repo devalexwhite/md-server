@@ -172,7 +172,19 @@ pub fn infer_summary(content: &str) -> Option<String> {
 /// Infer a date string (YYYY-MM-DD) from file creation or modification time.
 pub async fn infer_date(path: &Path) -> Option<String> {
     let meta = tokio::fs::metadata(path).await.ok()?;
-    let sys_time = meta.created().ok().or_else(|| meta.modified().ok())?;
+    let sys_time = match meta.created() {
+        Ok(t) => t,
+        Err(_) => {
+            // File creation time is unavailable on most Linux filesystems (e.g.
+            // ext4, xfs). Fall back to modification time, which will be wrong
+            // after a git clone or rsync.
+            tracing::debug!(
+                path = %path.display(),
+                "file creation time unavailable, using mtime for date inference"
+            );
+            meta.modified().ok()?
+        }
+    };
     let dt: DateTime<Local> = sys_time.into();
     Some(dt.format("%Y-%m-%d").to_string())
 }

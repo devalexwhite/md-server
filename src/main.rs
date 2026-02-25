@@ -153,6 +153,20 @@ pub(crate) async fn run_http_server(
     port: u16,
     state: AppState,
 ) -> anyhow::Result<()> {
+    // Periodically evict expired sessions so the map doesn't grow unboundedly
+    // when browsers close without logging out.
+    let sessions = state.sessions.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30 * 60));
+        loop {
+            interval.tick().await;
+            sessions
+                .write()
+                .await
+                .retain(|_, created| created.elapsed() < editor::SESSION_TTL);
+        }
+    });
+
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

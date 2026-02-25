@@ -3,7 +3,7 @@ mod template;
 
 use axum::{
     Form, Router,
-    extract::{Request, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
@@ -17,7 +17,7 @@ use crate::state::AppState;
 /// Session cookie name.
 const SESSION_COOKIE: &str = "ed_session";
 /// Session lifetime (24 hours, sliding).
-const SESSION_TTL: Duration = Duration::from_secs(24 * 3600);
+pub(crate) const SESSION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/edit/delete", delete(handlers::delete_file))
         .route("/edit/rename", post(handlers::post_rename))
         .route("/edit/logout", post(post_logout))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
         .route_layer(middleware::from_fn_with_state(state, require_auth));
 
     Router::new().merge(public).merge(protected)
@@ -99,7 +100,7 @@ async fn post_login(State(state): State<AppState>, Form(form): Form<LoginForm>) 
             .insert(token.clone(), Instant::now());
 
         let cookie = format!(
-            "{}={}; Path=/edit; HttpOnly; SameSite=Strict; Max-Age={}",
+            "{}={}; Path=/edit; HttpOnly; SameSite=Strict; Max-Age={}; Secure",
             SESSION_COOKIE,
             token,
             SESSION_TTL.as_secs()
@@ -123,7 +124,7 @@ async fn post_logout(State(state): State<AppState>, req: Request) -> Response {
         state.sessions.write().await.remove(&tok);
     }
     let clear = format!(
-        "{}=; Path=/edit; HttpOnly; SameSite=Strict; Max-Age=0",
+        "{}=; Path=/edit; HttpOnly; SameSite=Strict; Max-Age=0; Secure",
         SESSION_COOKIE
     );
     (

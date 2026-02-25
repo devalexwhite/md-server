@@ -5,9 +5,18 @@ use axum::{
 };
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use crate::state::AppState;
+
+/// Returns true if `ip` is a loopback or private address, indicating the
+/// request came through a trusted local reverse proxy.
+fn is_trusted_proxy(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
 
 pub async fn log_request(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
@@ -30,18 +39,24 @@ pub async fn log_request(State(state): State<AppState>, req: Request, next: Next
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // Prefer X-Forwarded-For (reverse proxy) then the direct socket address.
-    let ip = req
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            req.extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ci| ci.0.ip().to_string())
-        });
+    let conn_ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+
+    // Only trust X-Forwarded-For when the direct connection comes from a
+    // trusted local address (loopback/private), indicating a reverse proxy.
+    // Otherwise use the socket address directly to prevent IP spoofing.
+    let ip = if conn_ip.map_or(false, is_trusted_proxy) {
+        req.headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .or_else(|| conn_ip.map(|ip| ip.to_string()))
+    } else {
+        conn_ip.map(|ip| ip.to_string())
+    };
 
     // Hash IP + current UTC date so individual IPs are not stored in plain text
     // and the hash rotates daily.

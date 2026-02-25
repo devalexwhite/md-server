@@ -518,9 +518,7 @@ async fn execute_action(app: &mut App, action: Action) {
                 app.set_msg("Domain cannot be empty.", true);
                 return;
             }
-            if let Err(e) = update_env_var(&app.env_path, "DOMAIN", &domain)
-                .and_then(|()| update_env_var(&app.env_path, "BASE_URL", &domain))
-            {
+            if let Err(e) = update_env_var(&app.env_path, "BASE_URL", &domain) {
                 app.set_msg(format!("Could not write .env: {e}"), true);
                 return;
             }
@@ -543,6 +541,9 @@ async fn execute_action(app: &mut App, action: Action) {
 // ── .env helpers ──────────────────────────────────────────────────────────────
 
 /// Update or add a key=value line in the .env file. Returns an error on I/O failure.
+///
+/// Writes atomically via a sibling temp file + rename to avoid truncating the
+/// .env file if the process is killed mid-write.
 fn update_env_var(env_path: &PathBuf, key: &str, value: &str) -> std::io::Result<()> {
     let content = std::fs::read_to_string(env_path).unwrap_or_default();
     let prefix = format!("{key}=");
@@ -554,7 +555,9 @@ fn update_env_var(env_path: &PathBuf, key: &str, value: &str) -> std::io::Result
         None => lines.push(new_line),
     }
 
-    std::fs::write(env_path, lines.join("\n") + "\n")
+    let tmp_path = env_path.with_extension("env.tmp");
+    std::fs::write(&tmp_path, lines.join("\n") + "\n")?;
+    std::fs::rename(&tmp_path, env_path)
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────

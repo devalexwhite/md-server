@@ -296,7 +296,7 @@ async fn collect_dir_entries(
 }
 
 /// Sort entries by date descending; undated entries last, alphabetically within ties.
-fn sort_entries(entries: &mut Vec<DirEntry>) {
+fn sort_entries(entries: &mut [DirEntry]) {
     entries.sort_unstable_by(|a, b| match (&b.date, &a.date) {
         (Some(bd), Some(ad)) => bd.cmp(ad),
         (Some(_), None) => std::cmp::Ordering::Less,

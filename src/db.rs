@@ -6,7 +6,7 @@ use argon2::{
 // rand_core 0.6 is what password-hash/argon2 depends on; must match that version.
 use rand_core::OsRng;
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
-use std::{path::Path, str::FromStr};
+use std::path::Path;
 
 #[derive(Debug, Default, Clone)]
 pub struct RequestStats {
@@ -33,9 +33,8 @@ pub struct AnalyticsData {
 }
 
 pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
-    let url = format!("sqlite:{}", db_path.display());
-    let opts = SqliteConnectOptions::from_str(&url)
-        .context("Invalid DB path")?
+    let opts = SqliteConnectOptions::new()
+        .filename(db_path)
         .create_if_missing(true);
 
     let pool = SqlitePool::connect_with(opts)
@@ -49,6 +48,18 @@ pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
 }
 
 async fn init_schema(pool: &SqlitePool) -> Result<()> {
+    // WAL mode enables concurrent reads during writes, which is important for
+    // analytics inserts (fire-and-forget) racing with editor page loads.
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(pool)
+        .await
+        .context("Failed to set WAL journal mode")?;
+
+    sqlx::query("PRAGMA synchronous=NORMAL")
+        .execute(pool)
+        .await
+        .context("Failed to set synchronous mode")?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,7 +308,16 @@ pub async fn add_user(pool: &SqlitePool, username: &str, password: &str) -> Resu
 
 /// Verify a username/password pair against the database.
 /// Returns `false` on any error or if credentials are wrong.
+///
+/// When the username is not found we still run an Argon2 verification against a
+/// dummy hash so that the response time is the same regardless of whether the
+/// username exists, preventing timing-based user enumeration.
 pub async fn verify_user(pool: &SqlitePool, username: &str, password: &str) -> bool {
+    // A pre-computed argon2id hash used for dummy verification when the username
+    // is not found. The hash is intentionally unmatched to any password.
+    const DUMMY_HASH: &str =
+        "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
     let row = sqlx::query("SELECT password_hash FROM users WHERE username = ?")
         .bind(username)
         .fetch_optional(pool)
@@ -305,7 +325,8 @@ pub async fn verify_user(pool: &SqlitePool, username: &str, password: &str) -> b
 
     let hash_str: String = match row {
         Ok(Some(r)) => r.get("password_hash"),
-        _ => return false,
+        // User not found: use dummy hash to equalize timing, then always return false.
+        _ => DUMMY_HASH.to_string(),
     };
 
     let parsed = match PasswordHash::new(&hash_str) {

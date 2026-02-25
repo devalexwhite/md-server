@@ -3,7 +3,6 @@ use super::handlers::urlencoded;
 use crate::db::AnalyticsData;
 
 /// A node in the www-root file tree.
-#[allow(dead_code)]
 pub enum FileNode {
     Dir {
         name: String,
