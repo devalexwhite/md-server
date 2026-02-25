@@ -1,4 +1,6 @@
+mod analytics;
 mod css;
+mod db;
 mod editor;
 mod error;
 mod front_matter;
@@ -6,12 +8,20 @@ mod handler;
 mod rss;
 mod state;
 mod template;
+mod tui;
 
 use anyhow::Context;
-use axum::{http::StatusCode, response::Redirect, routing::get, Router};
+use axum::{Router, http::StatusCode, middleware, response::Redirect, routing::get};
 use clap::Parser;
-use state::{AppState, EditorConfig};
-use std::path::PathBuf;
+use sqlx::SqlitePool;
+use state::AppState;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+};
+use tokio::sync::RwLock;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -37,13 +47,9 @@ struct Args {
     #[arg(long, env = "BASE_URL")]
     base_url: Option<String>,
 
-    /// Editor dashboard username. If unset, the /edit dashboard is disabled.
-    #[arg(long, env = "EDITOR_USERNAME")]
-    editor_username: Option<String>,
-
-    /// Editor dashboard password. If unset, the /edit dashboard is disabled.
-    #[arg(long, env = "EDITOR_PASSWORD")]
-    editor_password: Option<String>,
+    /// Run in headless mode (no TUI). Useful for Docker / systemd deployments.
+    #[arg(long, default_value = "false")]
+    headless: bool,
 }
 
 #[tokio::main]
@@ -56,19 +62,22 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Load .env file if present (silently ignored if absent).
-    dotenvy::dotenv().ok();
+    // Locate the directory that contains the binary — .env and the DB live here.
+    let exe = std::env::current_exe().context("Cannot determine binary path")?;
+    let exe_dir = exe
+        .parent()
+        .context("Binary has no parent directory")?
+        .to_path_buf();
+
+    // Load .env from the binary's directory (silently ignored if absent).
+    let env_path = exe_dir.join(".env");
+    dotenvy::from_path(&env_path).ok();
 
     let args = Args::parse();
 
     let www_root = match args.root {
         Some(path) => path,
-        None => {
-            let exe = std::env::current_exe().context("Cannot determine binary path")?;
-            exe.parent()
-                .context("Binary has no parent directory")?
-                .join("www")
-        }
+        None => exe_dir.join("www"),
     };
 
     tracing::info!("www root: {}", www_root.display());
@@ -76,53 +85,89 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("www root does not exist yet: {}", www_root.display());
     }
 
-    // Resolve symlinks in www_root for security comparisons at request time.
-    // Falls back to the lexical path if the directory doesn't exist yet.
+    // Initialise the SQLite database (creates file + schema if needed).
+    let db_path = exe_dir.join("md-server.db");
+    tracing::info!("Database: {}", db_path.display());
+    let db = db::init_pool(&db_path)
+        .await
+        .context("Failed to initialise database")?;
+
+    if args.headless {
+        tracing::info!("Headless mode — TUI disabled");
+        let state = build_state(www_root, args.base_url, db).await?;
+        run_http_server(args.host, args.port, state).await?;
+    } else {
+        tui::run(tui::TuiConfig {
+            host: args.host,
+            port: args.port,
+            db,
+            env_path,
+            www_root,
+            base_url: args.base_url,
+        })
+        .await?;
+    }
+
+    Ok(())
+}
+
+// ── Server helpers (pub(crate) so tui.rs can call them) ──────────────────────
+
+pub(crate) async fn build_state(
+    www_root: PathBuf,
+    base_url: Option<String>,
+    db: SqlitePool,
+) -> anyhow::Result<AppState> {
     let canonical_root = tokio::fs::canonicalize(&www_root)
         .await
         .unwrap_or_else(|_| www_root.clone());
 
-    let editor = match (args.editor_username, args.editor_password) {
-        (Some(u), Some(p)) => {
-            tracing::info!("Editor dashboard enabled at /edit");
-            Some(EditorConfig::new(u, p))
-        }
-        _ => {
-            tracing::info!("Editor dashboard disabled (EDITOR_USERNAME/EDITOR_PASSWORD not set)");
-            None
-        }
-    };
-
-    let state = AppState {
+    Ok(AppState {
         www_root,
         canonical_root,
-        base_url: args.base_url,
-        editor,
-    };
+        base_url,
+        db,
+        sessions: Arc::new(RwLock::new(HashMap::new())),
+    })
+}
 
-    // CatchPanicLayer is outermost so it recovers from panics anywhere in the stack.
-    let app = Router::new()
+pub(crate) fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
-        // Redirect /edit/ → /edit to avoid the matchit empty-catchall gap in nest().
+        // Redirect /edit/ → /edit to avoid the matchit empty-catchall gap.
         .route("/edit/", get(|| async { Redirect::permanent("/edit") }))
         .merge(editor::router(state.clone()))
         .fallback(handler::handle)
+        // Analytics middleware — skips /healthz and /edit/* internally.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            analytics::log_request,
+        ))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
-        .layer(CatchPanicLayer::new());
+        .layer(CatchPanicLayer::new())
+}
 
-    let addr = format!("{}:{}", args.host, args.port);
+pub(crate) async fn run_http_server(
+    host: String,
+    port: u16,
+    state: AppState,
+) -> anyhow::Result<()> {
+    let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("Cannot bind to {addr}"))?;
 
     tracing::info!("Listening on http://{addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("Server error")?;
 
-    Ok(())
+    let app = build_router(state);
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("Server error")
 }
 
 async fn shutdown_signal() {

@@ -22,3 +22,10 @@ anyhow = "1"
 percent-encoding = "2"
 rand = "0.9"
 dotenvy = "0.15"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+ratatui = "0.28"
+crossterm = "0.28"
+woothee = "0.13"

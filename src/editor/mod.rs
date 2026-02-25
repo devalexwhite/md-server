@@ -24,14 +24,10 @@ const SESSION_TTL: Duration = Duration::from_secs(24 * 3600);
 /// Build the editor router with full `/edit/*` paths.
 /// Uses `merge` (not `nest`) in `main.rs` to avoid matchit's empty-catchall
 /// gap which causes `/edit/` to fall through to the fallback handler.
-/// `state` is passed here to give `from_fn_with_state` a baked-in copy for
-/// the auth middleware; handler state is satisfied by `with_state` in `main.rs`.
 pub fn router(state: AppState) -> Router<AppState> {
-    // Public routes — no auth required.
     let public = Router::new()
         .route("/edit/login", get(get_login).post(post_login));
 
-    // Protected routes — auth middleware applied as a route layer.
     let protected = Router::new()
         .route("/edit", get(handlers::get_dashboard))
         .route("/edit/open", get(handlers::get_editor))
@@ -49,28 +45,28 @@ pub fn router(state: AppState) -> Router<AppState> {
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
 
-async fn require_auth(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let Some(ref editor) = state.editor else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
+async fn require_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let token = extract_session_cookie(req.headers());
 
     if let Some(tok) = token {
+        // Use a single write lock for both the validity check and the expiry slide
+        // to avoid a TOCTOU race where a concurrent logout removes the session
+        // between the read and write.
         let valid = {
-            let sessions = editor.sessions.read().await;
-            sessions
-                .get(&tok)
-                .map(|exp| exp.elapsed() < SESSION_TTL)
-                .unwrap_or(false)
+            let mut sessions = state.sessions.write().await;
+            if let Some(exp) = sessions.get(&tok) {
+                if exp.elapsed() < SESSION_TTL {
+                    sessions.insert(tok.clone(), Instant::now());
+                    true
+                } else {
+                    sessions.remove(&tok);
+                    false
+                }
+            } else {
+                false
+            }
         };
         if valid {
-            // Slide expiry on activity.
-            editor.sessions.write().await.insert(tok, Instant::now());
             return next.run(req).await;
         }
     }
@@ -80,10 +76,7 @@ async fn require_auth(
 
 // ── Login / logout ────────────────────────────────────────────────────────────
 
-async fn get_login(State(state): State<AppState>) -> Response {
-    if state.editor.is_none() {
-        return StatusCode::NOT_FOUND.into_response();
-    }
+async fn get_login() -> Response {
     Html(template::login_page(None).into_string()).into_response()
 }
 
@@ -93,20 +86,16 @@ struct LoginForm {
     password: String,
 }
 
-async fn post_login(
-    State(state): State<AppState>,
-    Form(form): Form<LoginForm>,
-) -> Response {
-    let Some(ref editor) = state.editor else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
+async fn post_login(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Response {
+    let ok = crate::db::verify_user(&state.db, &form.username, &form.password).await;
 
-    let user_ok = constant_time_eq(form.username.as_bytes(), editor.username.as_bytes());
-    let pass_ok = constant_time_eq(form.password.as_bytes(), editor.password.as_bytes());
-
-    if user_ok && pass_ok {
+    if ok {
         let token = new_session_token();
-        editor.sessions.write().await.insert(token.clone(), Instant::now());
+        state
+            .sessions
+            .write()
+            .await
+            .insert(token.clone(), Instant::now());
 
         let cookie = format!(
             "{}={}; Path=/edit; HttpOnly; SameSite=Strict; Max-Age={}",
@@ -123,18 +112,14 @@ async fn post_login(
         )
             .into_response()
     } else {
-        Html(
-            template::login_page(Some("Invalid username or password.")).into_string(),
-        )
-        .into_response()
+        Html(template::login_page(Some("Invalid username or password.")).into_string())
+            .into_response()
     }
 }
 
 async fn post_logout(State(state): State<AppState>, req: Request) -> Response {
-    if let Some(ref editor) = state.editor {
-        if let Some(tok) = extract_session_cookie(req.headers()) {
-            editor.sessions.write().await.remove(&tok);
-        }
+    if let Some(tok) = extract_session_cookie(req.headers()) {
+        state.sessions.write().await.remove(&tok);
     }
     let clear = format!(
         "{}=; Path=/edit; HttpOnly; SameSite=Strict; Max-Age=0",
@@ -168,18 +153,4 @@ fn new_session_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// Constant-time byte comparison. Always runs in time proportional to
-/// `b.len()` (the stored credential) regardless of the submitted value `a`.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    // XOR every byte of `a` (clamped to `b`'s length) against `b`, plus a
-    // length mismatch flag. The fold always iterates b.len() times.
-    let len_ok = (a.len() == b.len()) as u8;
-    let content_ok = b
-        .iter()
-        .enumerate()
-        .fold(0u8, |acc, (i, &bv)| acc | (a.get(i).copied().unwrap_or(!bv) ^ bv));
-    // Both len and content must be 0 (equal) for the result to be true.
-    (len_ok & (content_ok == 0) as u8) == 1
 }

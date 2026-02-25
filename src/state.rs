@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -14,25 +15,8 @@ pub struct AppState {
     pub canonical_root: PathBuf,
     /// Optional base URL (e.g. "https://example.com") prepended to item links in RSS feeds.
     pub base_url: Option<String>,
-    /// Editor config; `None` means the editor is disabled (env vars not set).
-    pub editor: Option<EditorConfig>,
-}
-
-/// Configuration and live session store for the /edit dashboard.
-#[derive(Clone)]
-pub struct EditorConfig {
-    pub username: String,
-    pub password: String,
-    /// Active sessions: token → expiry instant.
+    /// SQLite connection pool — shared across all request handlers.
+    pub db: SqlitePool,
+    /// Active editor sessions: token → last-used instant.
     pub sessions: Arc<RwLock<HashMap<String, Instant>>>,
-}
-
-impl EditorConfig {
-    pub fn new(username: String, password: String) -> Self {
-        Self {
-            username,
-            password,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
 }
