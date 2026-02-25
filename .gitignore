@@ -2,5 +2,6 @@
 .env
 www/*
 !www/.gitkeep
+*.DS_Store
 
 /local-refresh.sh

@@ -1,11 +1,16 @@
 # mdServer
 
+![TUI Server Interface](./screenshots/tui.jpeg)
+
 A single-binary Rust web server that turns a directory of Markdown files into a browsable website — no config files, no build step, no database.
 
 Drop `.md` files in a folder. Point `md-server` at it. Done.
 
 ## Features
 
+- **Server TUI** - Go from zero to a running server in seconds, with no config files.
+- **Admin Dashboard** - Create and edit posts directly from the web.
+- **Analytics** - Built-in analytics to track page views.
 - **Clean URLs** — `/posts/hello` serves `posts/hello.md`
 - **Auto directory listings** — sortable by date, with titles and summaries extracted from each file
 - **`index.md` as a landing page** — place one in any directory to replace the auto-listing
@@ -21,6 +26,11 @@ Drop `.md` files in a folder. Point `md-server` at it. Done.
 - **Path traversal protection** — every request is `canonicalize()`d and checked against the `www_root` before any file is read
 - **GFM rendering** — GitHub Flavoured Markdown via the `markdown` crate (tables, strikethrough, task lists, autolinks)
 - **Graceful shutdown** — handles SIGTERM and Ctrl-C cleanly
+
+## Screenshots
+
+![Analytics Dashboard](./screenshots/analytics.jpeg)
+![Editor Interface](./screenshots/editor.jpeg)
 
 ## Quick start
 
@@ -56,7 +66,6 @@ summary: A one-sentence description shown in directory listings and og:descripti
 date: 2024-06-01
 author: Alice
 ---
-
 # My Post Title
 
 Content goes here...
@@ -91,12 +100,12 @@ md-server --root ./www --base-url https://example.com
 
 ## Configuration
 
-| CLI flag | Env var | Default |
-|---|---|---|
-| `--port` | `PORT` | `3000` |
-| `--host` | `HOST` | `0.0.0.0` |
-| `--root` | `WWW_ROOT` | `www/` next to the binary |
-| `--base-url` | `BASE_URL` | *(none — RSS links are relative)* |
+| CLI flag     | Env var    | Default                           |
+| ------------ | ---------- | --------------------------------- |
+| `--port`     | `PORT`     | `3000`                            |
+| `--host`     | `HOST`     | `0.0.0.0`                         |
+| `--root`     | `WWW_ROOT` | `www/` next to the binary         |
+| `--base-url` | `BASE_URL` | _(none — RSS links are relative)_ |
 
 Log level is controlled by `RUST_LOG`:
 
