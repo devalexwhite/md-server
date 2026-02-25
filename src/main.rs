@@ -56,6 +56,9 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Load .env file if present (silently ignored if absent).
+    dotenvy::dotenv().ok();
+
     let args = Args::parse();
 
     let www_root = match args.root {
