@@ -340,7 +340,7 @@ async fn read_index_metadata(dir: &Path) -> (Option<String>, Option<String>, Opt
     )
 }
 
-fn render_markdown(content: &str) -> String {
+pub fn render_markdown(content: &str) -> String {
     let mut opts = markdown::Options::gfm();
     opts.parse.constructs.frontmatter = false;
     opts.compile.allow_dangerous_html = true;

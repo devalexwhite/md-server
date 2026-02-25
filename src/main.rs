@@ -1,4 +1,5 @@
 mod css;
+mod editor;
 mod error;
 mod front_matter;
 mod handler;
@@ -7,9 +8,9 @@ mod state;
 mod template;
 
 use anyhow::Context;
-use axum::{http::StatusCode, routing::get, Router};
+use axum::{http::StatusCode, response::Redirect, routing::get, Router};
 use clap::Parser;
-use state::AppState;
+use state::{AppState, EditorConfig};
 use std::path::PathBuf;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
@@ -35,6 +36,14 @@ struct Args {
     /// If unset, RSS item links will be relative paths.
     #[arg(long, env = "BASE_URL")]
     base_url: Option<String>,
+
+    /// Editor dashboard username. If unset, the /edit dashboard is disabled.
+    #[arg(long, env = "EDITOR_USERNAME")]
+    editor_username: Option<String>,
+
+    /// Editor dashboard password. If unset, the /edit dashboard is disabled.
+    #[arg(long, env = "EDITOR_PASSWORD")]
+    editor_password: Option<String>,
 }
 
 #[tokio::main]
@@ -70,15 +79,30 @@ async fn main() -> anyhow::Result<()> {
         .await
         .unwrap_or_else(|_| www_root.clone());
 
+    let editor = match (args.editor_username, args.editor_password) {
+        (Some(u), Some(p)) => {
+            tracing::info!("Editor dashboard enabled at /edit");
+            Some(EditorConfig::new(u, p))
+        }
+        _ => {
+            tracing::info!("Editor dashboard disabled (EDITOR_USERNAME/EDITOR_PASSWORD not set)");
+            None
+        }
+    };
+
     let state = AppState {
         www_root,
         canonical_root,
         base_url: args.base_url,
+        editor,
     };
 
     // CatchPanicLayer is outermost so it recovers from panics anywhere in the stack.
     let app = Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
+        // Redirect /edit/ → /edit to avoid the matchit empty-catchall gap in nest().
+        .route("/edit/", get(|| async { Redirect::permanent("/edit") }))
+        .merge(editor::router(state.clone()))
         .fallback(handler::handle)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
