@@ -26,6 +26,44 @@ pub async fn get_dashboard(State(state): State<AppState>) -> Response {
     }
 }
 
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AnalyticsParams {
+    pub days: Option<i64>,
+}
+
+pub async fn get_analytics(
+    State(state): State<AppState>,
+    Query(params): Query<AnalyticsParams>,
+) -> Response {
+    let days = match params.days {
+        Some(1) => 1,
+        Some(7) => 7,
+        _ => 30,
+    };
+
+    let (tree, data) = tokio::join!(
+        build_file_tree(&state.canonical_root, &state.canonical_root),
+        crate::db::get_analytics_data(&state.db, days),
+    );
+
+    let tree = match tree {
+        Ok(t) => t,
+        Err(e) => return AppError::Io(e).into_response(),
+    };
+    let data = match data {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("analytics query failed: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html("Analytics unavailable.".to_string()))
+                .into_response();
+        }
+    };
+
+    Html(template::analytics_page(&tree, &data).into_string()).into_response()
+}
+
 // ── Editor page ───────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

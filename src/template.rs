@@ -1,4 +1,4 @@
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::front_matter::FrontMatter;
 
@@ -17,7 +17,10 @@ pub fn build_breadcrumbs(url_path: &str) -> Vec<Breadcrumb> {
     let path = url_path.trim_end_matches('/');
 
     if path.is_empty() {
-        return vec![Breadcrumb { label: "Home".to_string(), url: None }];
+        return vec![Breadcrumb {
+            label: "Home".to_string(),
+            url: None,
+        }];
     }
 
     let segments: Vec<&str> = path
@@ -60,6 +63,7 @@ pub struct DirEntry {
     pub date: Option<String>,
     pub summary: Option<String>,
     pub author: Option<String>,
+    pub content: Option<String>,
 }
 
 /// Full HTML page wrapping rendered markdown content.

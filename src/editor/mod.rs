@@ -30,6 +30,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     let protected = Router::new()
         .route("/edit", get(handlers::get_dashboard))
+        .route("/edit/analytics", get(handlers::get_analytics))
         .route("/edit/open", get(handlers::get_editor))
         .route("/edit/save", post(handlers::post_save))
         .route("/edit/preview", post(handlers::post_preview))

@@ -117,7 +117,13 @@ async fn serve_markdown(
     if let (Some(last), Some(title)) = (breadcrumbs.last_mut(), front_matter.title.as_deref()) {
         last.label = title.to_string();
     }
-    let markup = template::page(&front_matter, &html_body, css.as_deref(), meta_image.as_deref(), &breadcrumbs);
+    let markup = template::page(
+        &front_matter,
+        &html_body,
+        css.as_deref(),
+        meta_image.as_deref(),
+        &breadcrumbs,
+    );
 
     Ok(Html(markup.into_string()).into_response())
 }
@@ -215,7 +221,10 @@ async fn serve_rss(
 
 /// Collect directory entries (subdirectories and `.md` files) for `real_path`,
 /// building item URLs relative to `url_prefix` (e.g. `"/blog"`).
-async fn collect_dir_entries(real_path: &Path, url_prefix: &str) -> Result<Vec<DirEntry>, AppError> {
+async fn collect_dir_entries(
+    real_path: &Path,
+    url_prefix: &str,
+) -> Result<Vec<DirEntry>, AppError> {
     let mut read_dir = tokio::fs::read_dir(real_path).await.map_err(io_err)?;
     let mut entries: Vec<DirEntry> = Vec::new();
 
@@ -238,7 +247,16 @@ async fn collect_dir_entries(real_path: &Path, url_prefix: &str) -> Result<Vec<D
             let url = format!("{}/{}/", url_prefix, name);
             let date = front_matter::infer_date(&entry_path).await;
             let (title, summary, author) = read_index_metadata(&entry_path).await;
-            entries.push(DirEntry { display_name: name, url, is_dir: true, title, date, summary, author });
+            entries.push(DirEntry {
+                display_name: name,
+                url,
+                is_dir: true,
+                title,
+                date,
+                summary,
+                author,
+                content: None,
+            });
         } else if file_type.is_file() {
             let Some(stem) = md_stem(&name) else {
                 continue;
@@ -255,7 +273,10 @@ async fn collect_dir_entries(real_path: &Path, url_prefix: &str) -> Result<Vec<D
                     String::new()
                 });
 
-            let ParsedDoc { mut front_matter, content } = front_matter::parse(&raw);
+            let ParsedDoc {
+                mut front_matter,
+                content,
+            } = front_matter::parse(&raw);
             front_matter::fill_inferred(&mut front_matter, &content, &entry_path).await;
 
             entries.push(DirEntry {
@@ -266,6 +287,7 @@ async fn collect_dir_entries(real_path: &Path, url_prefix: &str) -> Result<Vec<D
                 date: front_matter.date,
                 summary: front_matter.summary,
                 author: front_matter.author,
+                content: Some(content),
             });
         }
     }

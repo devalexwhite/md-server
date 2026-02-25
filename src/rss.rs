@@ -44,7 +44,10 @@ pub fn build_feed(
             esc(&link)
         ));
         if let Some(summary) = &item.summary {
-            xml.push_str(&format!("    <description>{}</description>\n", esc(summary)));
+            xml.push_str(&format!(
+                "    <description>{}</description>\n",
+                esc(summary)
+            ));
         }
         if let Some(date) = &item.date {
             xml.push_str(&format!("    <pubDate>{}</pubDate>\n", to_rfc822(date)));

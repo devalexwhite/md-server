@@ -1,5 +1,6 @@
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use super::handlers::urlencoded;
+use crate::db::AnalyticsData;
 
 /// A node in the www-root file tree.
 #[allow(dead_code)]
@@ -141,7 +142,7 @@ pub fn dashboard(tree: &[FileNode]) -> Markup {
         htmx_head(),
         html! {
             div class="layout" {
-                (sidebar(tree, None))
+                (sidebar(tree, None, false))
                 main class="main-content" {
                     div class="page-topbar" {
                         button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
@@ -193,7 +194,7 @@ pub fn editor_page(rel_path: &str, content: &str, tree: &[FileNode]) -> Markup {
         },
         html! {
             div class="layout" {
-                (sidebar(tree, Some(rel_path)))
+                (sidebar(tree, Some(rel_path), false))
                 main class="main-content editor-main" {
                     div class="editor-toolbar" {
                         button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
@@ -255,15 +256,276 @@ pub fn editor_page(rel_path: &str, content: &str, tree: &[FileNode]) -> Markup {
     )
 }
 
+// ── Analytics page ─────────────────────────────────────────────────────────────
+
+pub fn analytics_page(tree: &[FileNode], data: &AnalyticsData) -> Markup {
+    // Align visitor counts to the same time buckets as the traffic data.
+    let visitor_map: std::collections::HashMap<&str, i64> = data
+        .visitors_by_period
+        .iter()
+        .map(|r| (r.label.as_str(), r.count))
+        .collect();
+    let aligned_visitors: Vec<i64> = data
+        .traffic_by_period
+        .iter()
+        .map(|r| visitor_map.get(r.label.as_str()).copied().unwrap_or(0))
+        .collect();
+
+    shell(
+        "Analytics",
+        chartjs_head(),
+        html! {
+            div class="layout" {
+                (sidebar(tree, None, true))
+                main class="main-content" {
+                    div class="page-topbar" {
+                        button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
+                            (PreEscaped(HAMBURGER_SVG))
+                        }
+                        span class="topbar-title" { "Analytics" }
+                    }
+                    div class="analytics-page" {
+                        div class="analytics-header" {
+                            h2 class="dashboard-title" { "Analytics" }
+                            div class="period-switcher" {
+                                a href="/edit/analytics?days=1"
+                                  class=(if data.days == 1 { "period-btn active" } else { "period-btn" })
+                                { "24h" }
+                                a href="/edit/analytics?days=7"
+                                  class=(if data.days == 7 { "period-btn active" } else { "period-btn" })
+                                { "7d" }
+                                a href="/edit/analytics?days=30"
+                                  class=(if data.days == 30 { "period-btn active" } else { "period-btn" })
+                                { "30d" }
+                            }
+                        }
+                        div class="stat-cards" {
+                            div class="stat-card" {
+                                div class="stat-value" { (fmt_num(data.total_requests)) }
+                                div class="stat-label" { "Requests" }
+                            }
+                            div class="stat-card" {
+                                div class="stat-value" { (fmt_num(data.unique_visitors)) }
+                                div class="stat-label" { "Unique visitors" }
+                            }
+                        }
+                        div class="chart-section" {
+                            h3 class="chart-title" { "Traffic" }
+                            div class="chart-wrap" {
+                                canvas id="chart-traffic" {}
+                            }
+                        }
+                        div class="charts-grid" {
+                            div class="chart-section" {
+                                h3 class="chart-title" { "Top pages" }
+                                div class="chart-wrap-h" id="wrap-pages" {
+                                    canvas id="chart-pages" {}
+                                }
+                            }
+                            div class="chart-section" {
+                                h3 class="chart-title" { "Top referrers" }
+                                div class="chart-wrap-h" id="wrap-referrers" {
+                                    canvas id="chart-referrers" {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (chartjs_init(data, &aligned_visitors))
+        },
+    )
+}
+
+fn fmt_num(n: i64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out.chars().rev().collect()
+}
+
+/// Serialize a string as a safe JavaScript string literal for use in a
+/// `<script>` block embedded in HTML. Escapes all characters that could
+/// break out of the literal or close the surrounding `<script>` tag.
+fn js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"'           => out.push_str("\\\""),
+            '\\'          => out.push_str("\\\\"),
+            '\n'          => out.push_str("\\n"),
+            '\r'          => out.push_str("\\r"),
+            '\t'          => out.push_str("\\t"),
+            '<'           => out.push_str("\\u003c"),  // prevents </script>
+            '>'           => out.push_str("\\u003e"),
+            '&'           => out.push_str("\\u0026"),
+            '\u{2028}'    => out.push_str("\\u2028"),  // JS line separator
+            '\u{2029}'    => out.push_str("\\u2029"),  // JS paragraph separator
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c             => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn js_strings(rows: &[crate::db::AnalyticsRow]) -> String {
+    let parts: Vec<String> = rows.iter().map(|r| js_string(&r.label)).collect();
+    format!("[{}]", parts.join(","))
+}
+
+fn js_numbers(rows: &[crate::db::AnalyticsRow]) -> String {
+    let parts: Vec<String> = rows.iter().map(|r| r.count.to_string()).collect();
+    format!("[{}]", parts.join(","))
+}
+
+fn js_numbers_raw(values: &[i64]) -> String {
+    let parts: Vec<String> = values.iter().map(|n| n.to_string()).collect();
+    format!("[{}]", parts.join(","))
+}
+
+fn chartjs_head() -> Markup {
+    html! {
+        script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" {}
+    }
+}
+
+fn chartjs_init(data: &AnalyticsData, aligned_visitors: &[i64]) -> Markup {
+    let traffic_labels   = js_strings(&data.traffic_by_period);
+    let traffic_values   = js_numbers(&data.traffic_by_period);
+    let visitor_values   = js_numbers_raw(aligned_visitors);
+    let pages_labels     = js_strings(&data.top_pages);
+    let pages_values     = js_numbers(&data.top_pages);
+    let ref_labels       = js_strings(&data.top_referrers);
+    let ref_values       = js_numbers(&data.top_referrers);
+    html! {
+        script { (PreEscaped(format!(r#"
+(function () {{
+  var ACCENT      = '#c9a84c';
+  var ACCENT_DIM  = 'rgba(201,168,76,0.35)';
+  var GREEN       = '#4caf82';
+  var GREEN_DIM   = 'rgba(76,175,130,0.4)';
+  var MUTED       = '#68718f';
+  var GRID        = 'rgba(36,42,61,0.8)';
+  var TEXT        = '#dde1ed';
+
+  Chart.defaults.color          = TEXT;
+  Chart.defaults.borderColor    = GRID;
+  Chart.defaults.font.family    = "'Syne', sans-serif";
+  Chart.defaults.font.size      = 11;
+
+  function hBar(el, labels, values, color) {{
+    if (!el || !labels.length) return;
+    el.parentElement.style.height = Math.max(120, labels.length * 30 + 50) + 'px';
+    new Chart(el, {{
+      type: 'bar',
+      data: {{
+        labels: labels,
+        datasets: [{{ data: values, backgroundColor: color, borderRadius: 3, borderSkipped: false }}]
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{ legend: {{ display: false }} }},
+        scales: {{
+          x: {{ grid: {{ color: GRID }}, ticks: {{ color: MUTED }}, beginAtZero: true }},
+          y: {{ grid: {{ display: false }}, ticks: {{ color: TEXT, font: {{ size: 11 }}, maxRotation: 0 }} }}
+        }}
+      }}
+    }});
+  }}
+
+  var trafficEl = document.getElementById('chart-traffic');
+  if (trafficEl) {{
+    new Chart(trafficEl, {{
+      data: {{
+        labels: {traffic_labels},
+        datasets: [
+          {{
+            type: 'bar',
+            label: 'Requests',
+            data: {traffic_values},
+            backgroundColor: ACCENT_DIM,
+            borderColor: ACCENT,
+            borderWidth: 1,
+            borderRadius: 3,
+            borderSkipped: false,
+            order: 2
+          }},
+          {{
+            type: 'line',
+            label: 'Visitors',
+            data: {visitor_values},
+            borderColor: GREEN,
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            tension: 0.35,
+            pointRadius: 3,
+            pointBackgroundColor: GREEN,
+            order: 1
+          }}
+        ]
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{
+          legend: {{
+            display: true,
+            labels: {{ color: MUTED, boxWidth: 12, font: {{ size: 11 }} }}
+          }}
+        }},
+        scales: {{
+          x: {{ grid: {{ color: GRID }}, ticks: {{ color: MUTED }} }},
+          y: {{ grid: {{ color: GRID }}, ticks: {{ color: MUTED }}, beginAtZero: true }}
+        }}
+      }}
+    }});
+  }}
+
+  hBar(document.getElementById('chart-pages'),     {pages_labels}, {pages_values}, ACCENT_DIM);
+  hBar(document.getElementById('chart-referrers'), {ref_labels},   {ref_values},   GREEN_DIM);
+}})();
+"#,
+            traffic_labels = traffic_labels,
+            traffic_values = traffic_values,
+            visitor_values = visitor_values,
+            pages_labels   = pages_labels,
+            pages_values   = pages_values,
+            ref_labels     = ref_labels,
+            ref_values     = ref_values,
+        ))) }
+    }
+}
+
 // ── Sidebar ────────────────────────────────────────────────────────────────────
 
-fn sidebar(tree: &[FileNode], active: Option<&str>) -> Markup {
+fn sidebar(tree: &[FileNode], active: Option<&str>, analytics_active: bool) -> Markup {
     html! {
         aside class="sidebar" {
             div class="sidebar-header" {
                 a href="/edit" class="brand" { "md" span { "·" } "server" }
                 form method="post" action="/edit/logout" style="display:inline" {
                     button type="submit" class="btn-signout" { "Sign out" }
+                }
+            }
+            div class="sidebar-nav" {
+                a href="/edit" class=(if !analytics_active { "snav-link active" } else { "snav-link" }) {
+                    (PreEscaped(r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>"#))
+                    " Content"
+                }
+                a href="/edit/analytics" class=(if analytics_active { "snav-link active" } else { "snav-link" }) {
+                    (PreEscaped(r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>"#))
+                    " Analytics"
                 }
             }
             nav class="file-tree" {
@@ -387,8 +649,8 @@ const BASE_CSS: &str = r#"
   --toolbar-h:    50px;
   --z-ctx:        1000;
   --z-modal:       900;
+  --z-sidebar:     810;
   --z-backdrop:    800;
-  --z-sidebar:     700;
 }
 
 body {
@@ -590,6 +852,31 @@ body.sidebar-open .sidebar-backdrop { display: block; }
 }
 .sidebar-footer a { color: var(--muted); }
 .sidebar-footer a:hover { color: var(--accent); }
+
+/* ── Sidebar nav ── */
+.sidebar-nav {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.snav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.3rem 0.625rem;
+  border-radius: 6px;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.snav-link:hover { color: var(--text); background: var(--surface-2); }
+.snav-link.active { color: var(--accent); background: var(--accent-dim); }
 
 /* ── Main content ── */
 .main-content {
@@ -981,6 +1268,92 @@ body.sidebar-open .sidebar-backdrop { display: block; }
 .ctx-separator { height: 1px; background: var(--border); margin: 0.375rem 0; }
 .ctx-icon { width: 14px; text-align: center; opacity: 0.65; }
 
+/* ── Analytics ── */
+.analytics-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2.5rem;
+}
+.analytics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.75rem;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.period-switcher {
+  display: flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.25rem;
+  gap: 0.125rem;
+}
+.period-btn {
+  padding: 0.3rem 0.875rem;
+  border-radius: 6px;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.period-btn:hover { color: var(--text); }
+.period-btn.active { background: var(--surface-3); color: var(--text); }
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+}
+.stat-value {
+  font-family: 'Syne', sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+  margin-bottom: 0.375rem;
+}
+.stat-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.chart-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+}
+.chart-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  margin-bottom: 1rem;
+}
+.chart-wrap { position: relative; height: 200px; }
+.chart-wrap-h { position: relative; height: 120px; transition: height 0.15s; }
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {
   :root { --sidebar-w: 280px; }
@@ -1006,6 +1379,10 @@ body.sidebar-open .sidebar-backdrop { display: block; }
   .dashboard { padding: 1.25rem; }
 
   .pane-preview { padding: 1.25rem 1.5rem; }
+
+  .analytics-page { padding: 1.25rem; }
+  .stat-cards { grid-template-columns: 1fr; }
+  .charts-grid { grid-template-columns: 1fr; }
 }
 "#;
 

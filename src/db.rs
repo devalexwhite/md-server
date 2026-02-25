@@ -15,6 +15,23 @@ pub struct RequestStats {
     pub last_24h: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct AnalyticsRow {
+    pub label: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct AnalyticsData {
+    pub days: i64,
+    pub total_requests: i64,
+    pub unique_visitors: i64,
+    pub traffic_by_period: Vec<AnalyticsRow>,
+    pub visitors_by_period: Vec<AnalyticsRow>,
+    pub top_pages: Vec<AnalyticsRow>,
+    pub top_referrers: Vec<AnalyticsRow>,
+}
+
 pub async fn init_pool(db_path: &Path) -> Result<SqlitePool> {
     let url = format!("sqlite:{}", db_path.display());
     let opts = SqliteConnectOptions::from_str(&url)
@@ -90,6 +107,130 @@ pub async fn get_request_stats(pool: &SqlitePool) -> Result<RequestStats> {
         last_7m: row.get::<i64, _>("last_7m"),
         last_1h: row.get::<i64, _>("last_1h"),
         last_24h: row.get::<i64, _>("last_24h"),
+    })
+}
+
+pub async fn get_analytics_data(pool: &SqlitePool, days: i64) -> Result<AnalyticsData> {
+    // Compute the cutoff timestamp in Rust and bind it as a parameter to
+    // all queries — never interpolate it into SQL strings directly.
+    let since: String = if days == 1 {
+        (chrono::Utc::now() - chrono::Duration::hours(24))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    } else {
+        (chrono::Utc::now() - chrono::Duration::days(days))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    };
+
+    // Total requests in window.
+    let total: i64 = sqlx::query(
+        "SELECT COUNT(*) as n FROM requests WHERE timestamp >= ?",
+    )
+    .bind(&since)
+    .fetch_one(pool)
+    .await?
+    .get::<i64, _>("n");
+
+    // Unique visitors (distinct non-null ip_hash) in window.
+    let unique_visitors: i64 = sqlx::query(
+        "SELECT COUNT(DISTINCT ip_hash) as n FROM requests \
+         WHERE timestamp >= ? AND ip_hash IS NOT NULL",
+    )
+    .bind(&since)
+    .fetch_one(pool)
+    .await?
+    .get::<i64, _>("n");
+
+    // Traffic grouped by hour (24h view) or by day (7d/30d view).
+    // The group-by expression differs per period, so two static SQL strings.
+    let traffic_by_period = if days == 1 {
+        sqlx::query(
+            "SELECT strftime('%H:00', timestamp) as label, COUNT(*) as count \
+             FROM requests WHERE timestamp >= ? \
+             GROUP BY strftime('%H', timestamp) ORDER BY label ASC",
+        )
+    } else {
+        sqlx::query(
+            "SELECT date(timestamp) as label, COUNT(*) as count \
+             FROM requests WHERE timestamp >= ? \
+             GROUP BY label ORDER BY label ASC",
+        )
+    }
+    .bind(&since)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| AnalyticsRow {
+        label: r.get::<String, _>("label"),
+        count: r.get::<i64, _>("count"),
+    })
+    .collect();
+
+    // Unique visitors grouped by same period.
+    let visitors_by_period = if days == 1 {
+        sqlx::query(
+            "SELECT strftime('%H:00', timestamp) as label, COUNT(DISTINCT ip_hash) as count \
+             FROM requests WHERE timestamp >= ? AND ip_hash IS NOT NULL \
+             GROUP BY strftime('%H', timestamp) ORDER BY label ASC",
+        )
+    } else {
+        sqlx::query(
+            "SELECT date(timestamp) as label, COUNT(DISTINCT ip_hash) as count \
+             FROM requests WHERE timestamp >= ? AND ip_hash IS NOT NULL \
+             GROUP BY label ORDER BY label ASC",
+        )
+    }
+    .bind(&since)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| AnalyticsRow {
+        label: r.get::<String, _>("label"),
+        count: r.get::<i64, _>("count"),
+    })
+    .collect();
+
+    // Top 10 pages by request count.
+    let top_pages = sqlx::query(
+        "SELECT route, COUNT(*) as count FROM requests \
+         WHERE timestamp >= ? \
+         GROUP BY route ORDER BY count DESC LIMIT 10",
+    )
+    .bind(&since)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| AnalyticsRow {
+        label: r.get::<String, _>("route"),
+        count: r.get::<i64, _>("count"),
+    })
+    .collect();
+
+    // Top 10 referrers (excluding NULL).
+    let top_referrers = sqlx::query(
+        "SELECT referer, COUNT(*) as count FROM requests \
+         WHERE timestamp >= ? AND referer IS NOT NULL \
+         GROUP BY referer ORDER BY count DESC LIMIT 10",
+    )
+    .bind(&since)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|r| AnalyticsRow {
+        label: r.get::<String, _>("referer"),
+        count: r.get::<i64, _>("count"),
+    })
+    .collect();
+
+    Ok(AnalyticsData {
+        days,
+        total_requests: total,
+        unique_visitors,
+        traffic_by_period,
+        visitors_by_period,
+        top_pages,
+        top_referrers,
     })
 }
 
