@@ -5,6 +5,7 @@ mod editor;
 mod error;
 mod front_matter;
 mod handler;
+mod log_capture;
 mod rss;
 mod state;
 mod template;
@@ -54,14 +55,6 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "md_server=info,tower_http=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
     // Locate the directory that contains the binary — .env and the DB live here.
     let exe = std::env::current_exe().context("Cannot determine binary path")?;
     let exe_dir = exe
@@ -74,6 +67,26 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::from_path(&env_path).ok();
 
     let args = Args::parse();
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "md_server=info,tower_http=info".into());
+
+    // In TUI mode, redirect all log output to the ring buffer so it appears in
+    // the Logs panel. In headless mode, write to stdout via the fmt layer.
+    let log_buffer = if args.headless {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+        None
+    } else {
+        let (tui_layer, buffer) = log_capture::new();
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tui_layer)
+            .init();
+        Some(buffer)
+    };
 
     let www_root = match args.root {
         Some(path) => path,
@@ -97,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         let state = build_state(www_root, args.base_url, db).await?;
         run_http_server(args.host, args.port, state).await?;
     } else {
+        let buffer = log_buffer.expect("log_buffer is Some when not headless");
         tui::run(tui::TuiConfig {
             host: args.host,
             port: args.port,
@@ -104,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
             env_path,
             www_root,
             base_url: args.base_url,
+            log_buffer: buffer,
         })
         .await?;
     }

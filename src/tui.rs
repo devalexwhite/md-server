@@ -4,10 +4,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    prelude::*,
-    widgets::*,
-};
+use ratatui::{prelude::*, widgets::*};
 use sqlx::SqlitePool;
 use std::{
     path::PathBuf,
@@ -15,6 +12,7 @@ use std::{
 };
 
 use crate::db::{self, RequestStats};
+use crate::log_capture::LogBuffer;
 
 // ── Public config ─────────────────────────────────────────────────────────────
 
@@ -25,6 +23,7 @@ pub struct TuiConfig {
     pub env_path: PathBuf,
     pub www_root: PathBuf,
     pub base_url: Option<String>,
+    pub log_buffer: LogBuffer,
 }
 
 // ── Screens / state machine ───────────────────────────────────────────────────
@@ -92,6 +91,8 @@ struct App {
     message: Option<(String, bool, Instant)>, // (text, is_error, when)
     restart_pending: bool,
     stop_pending: bool,
+    log_buffer: LogBuffer,
+    log_scroll: u16, // lines scrolled up from tail (0 = follow tail)
 }
 
 impl App {
@@ -151,18 +152,20 @@ pub async fn run(config: TuiConfig) -> Result<()> {
     // Spawn a dedicated thread for blocking crossterm event reads.
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<crossterm::event::Event>();
-    std::thread::spawn(move || loop {
-        match crossterm::event::poll(Duration::from_millis(50)) {
-            Ok(true) => match crossterm::event::read() {
-                Ok(evt) => {
-                    if event_tx.send(evt).is_err() {
-                        break;
+    std::thread::spawn(move || {
+        loop {
+            match crossterm::event::poll(Duration::from_millis(50)) {
+                Ok(true) => match crossterm::event::read() {
+                    Ok(evt) => {
+                        if event_tx.send(evt).is_err() {
+                            break;
+                        }
                     }
-                }
+                    Err(_) => break,
+                },
+                Ok(false) => {}
                 Err(_) => break,
-            },
-            Ok(false) => {}
-            Err(_) => break,
+            }
         }
     });
 
@@ -178,6 +181,8 @@ pub async fn run(config: TuiConfig) -> Result<()> {
         message: None,
         restart_pending: false,
         stop_pending: false,
+        log_buffer: config.log_buffer,
+        log_scroll: 0,
     };
 
     let mut tick = tokio::time::interval(Duration::from_millis(TICK_MS));
@@ -273,6 +278,17 @@ fn handle_menu_key(app: &mut App, key: KeyCode) -> Action {
             if app.menu_idx + 1 < MENU_ITEMS.len() {
                 app.menu_idx += 1;
             }
+            Action::None
+        }
+        KeyCode::PageUp => {
+            app.log_scroll = app
+                .log_scroll
+                .saturating_add(10)
+                .min(crate::log_capture::MAX_LOG_LINES as u16);
+            Action::None
+        }
+        KeyCode::PageDown => {
+            app.log_scroll = app.log_scroll.saturating_sub(10);
             Action::None
         }
         KeyCode::Enter => activate_menu_item(app),
@@ -391,7 +407,9 @@ fn handle_content_dir_key(app: &mut App, key: KeyCode) -> Action {
             Action::CreateWwwDir
         }
         KeyCode::Char('2') => {
-            app.screen = Screen::ContentDirPath { input: String::new() };
+            app.screen = Screen::ContentDirPath {
+                input: String::new(),
+            };
             Action::None
         }
         KeyCode::Enter => {
@@ -400,7 +418,9 @@ fn handle_content_dir_key(app: &mut App, key: KeyCode) -> Action {
             if sel == 0 {
                 Action::CreateWwwDir
             } else {
-                app.screen = Screen::ContentDirPath { input: String::new() };
+                app.screen = Screen::ContentDirPath {
+                    input: String::new(),
+                };
                 Action::None
             }
         }
@@ -568,7 +588,11 @@ fn render(frame: &mut Frame, app: &App) {
     // Outer layout: title (3) | body (fill) | status bar (3)
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
         .split(area);
 
     render_title(frame, outer[0]);
@@ -580,7 +604,11 @@ fn render_title(frame: &mut Frame, area: Rect) {
     let title = Paragraph::new("md-server")
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
     frame.render_widget(title, area);
 }
 
@@ -589,23 +617,33 @@ fn render_body(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Menu => render_menu(frame, area, app),
         Screen::AddUser(state) => render_add_user(frame, area, state, app),
         Screen::ContentDir { selected } => render_content_dir(frame, area, *selected, app),
-        Screen::ContentDirPath { input } => {
-            render_text_input(frame, area, "Setup Content Directory", "Directory path:", input, app)
-        }
-        Screen::SetDomain { input } => {
-            render_text_input(frame, area, "Set Domain", "Domain URL (e.g. https://example.com):", input, app)
-        }
+        Screen::ContentDirPath { input } => render_text_input(
+            frame,
+            area,
+            "Setup Content Directory",
+            "Directory path:",
+            input,
+            app,
+        ),
+        Screen::SetDomain { input } => render_text_input(
+            frame,
+            area,
+            "Set Domain",
+            "Domain URL (e.g. https://example.com):",
+            input,
+            app,
+        ),
     }
 }
 
 fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
-    // Split body: left (menu) | right (info panel)
+    // Split body: left (menu) | right (info + logs)
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(30), Constraint::Length(40)])
+        .constraints([Constraint::Fill(1), Constraint::Fill(2)])
         .split(area);
 
-    // Menu list
+    // ── Left: menu list ───────────────────────────────────────────────────────
     let items: Vec<ListItem> = MENU_ITEMS
         .iter()
         .enumerate()
@@ -633,7 +671,13 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_stateful_widget(list, cols[0], &mut list_state);
 
-    // Info / message panel
+    // ── Right: split vertically — Info (25%) on top, Logs (75%) on bottom ────
+    let right_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(cols[1]);
+
+    // Info panel (top 25%)
     let info_text = if let Some((msg, is_err, _)) = &app.message {
         let style = if *is_err {
             Style::default().fg(Color::Red)
@@ -660,6 +704,10 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::DarkGray),
             )),
             Line::from(Span::styled(
+                "PgUp/PgDn  scroll logs",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
                 "Ctrl+C     quit",
                 Style::default().fg(Color::DarkGray),
             )),
@@ -671,9 +719,72 @@ fn render_menu(frame: &mut Frame, area: Rect, app: &App) {
         ]
     };
 
-    let info = Paragraph::new(info_text)
-        .block(Block::default().borders(Borders::ALL).title(" Info "));
-    frame.render_widget(info, cols[1]);
+    let info =
+        Paragraph::new(info_text).block(Block::default().borders(Borders::ALL).title(" Info "));
+    frame.render_widget(info, right_rows[0]);
+
+    // Logs panel (bottom 75%)
+    render_logs_panel(frame, right_rows[1], app);
+}
+
+fn render_logs_panel(frame: &mut Frame, area: Rect, app: &App) {
+    // Snapshot the ring buffer under a brief lock.
+    let entries: Vec<crate::log_capture::LogEntry> = app
+        .log_buffer
+        .lock()
+        .map(|buf| buf.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let total = entries.len();
+
+    // log_scroll counts lines scrolled *up* from the tail.
+    // 0 = follow tail. Clamped so you cannot scroll above the first entry.
+    let max_scroll = total.saturating_sub(inner_height) as u16;
+    let scroll_up = app.log_scroll.min(max_scroll);
+
+    // Ratatui Paragraph::scroll((row, col)) is top-anchored.
+    // display_row = max_scroll - scroll_up maps our tail-anchored offset to it.
+    let display_row = max_scroll.saturating_sub(scroll_up);
+
+    let lines: Vec<Line> = entries
+        .iter()
+        .flat_map(|entry| {
+            vec![
+                Line::from(Span::styled(
+                    entry.header.clone(),
+                    log_level_style(entry.level).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    entry.formatted.clone(),
+                    log_level_style(entry.level),
+                )),
+                Line::from(""), // gap between entries
+            ]
+        })
+        .collect();
+
+    let title = if scroll_up > 0 {
+        format!(" Logs  ↑{scroll_up}  PgDn to follow ")
+    } else {
+        " Logs  [tail]  PgUp to scroll ".to_string()
+    };
+
+    let logs = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .scroll((display_row, 0));
+
+    frame.render_widget(logs, area);
+}
+
+fn log_level_style(level: tracing::Level) -> Style {
+    match level {
+        tracing::Level::ERROR => Style::default().fg(Color::Red),
+        tracing::Level::WARN => Style::default().fg(Color::Yellow),
+        tracing::Level::INFO => Style::default().fg(Color::White),
+        tracing::Level::DEBUG => Style::default().fg(Color::DarkGray),
+        tracing::Level::TRACE => Style::default().fg(Color::DarkGray),
+    }
 }
 
 fn render_add_user(frame: &mut Frame, area: Rect, state: &AddUserState, app: &App) {
@@ -702,8 +813,12 @@ fn render_add_user(frame: &mut Frame, area: Rect, state: &AddUserState, app: &Ap
     } else {
         Style::default()
     };
-    let u_field = Paragraph::new(format!(" {}", state.username))
-        .block(Block::default().borders(Borders::ALL).title("Username").style(u_style));
+    let u_field = Paragraph::new(format!(" {}", state.username)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Username")
+            .style(u_style),
+    );
     frame.render_widget(u_field, rows[1]);
 
     // Password field (masked)
@@ -713,8 +828,12 @@ fn render_add_user(frame: &mut Frame, area: Rect, state: &AddUserState, app: &Ap
         Style::default()
     };
     let masked: String = "*".repeat(state.password.len());
-    let p_field = Paragraph::new(format!(" {masked}"))
-        .block(Block::default().borders(Borders::ALL).title("Password").style(p_style));
+    let p_field = Paragraph::new(format!(" {masked}")).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Password")
+            .style(p_style),
+    );
     frame.render_widget(p_field, rows[2]);
 
     let hint = Paragraph::new(Span::styled(
@@ -724,8 +843,7 @@ fn render_add_user(frame: &mut Frame, area: Rect, state: &AddUserState, app: &Ap
     frame.render_widget(hint, rows[4]);
 
     if let Some(err) = &state.error {
-        let err_p =
-            Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)));
+        let err_p = Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)));
         frame.render_widget(err_p, rows[5]);
     } else if let Some((msg, is_err, _)) = &app.message {
         let style = if *is_err {
@@ -803,12 +921,11 @@ fn render_text_input(
     let label_p = Paragraph::new(format!(" {label}"));
     frame.render_widget(label_p, rows[1]);
 
-    let field = Paragraph::new(format!(" {input}"))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .style(Style::default().fg(Color::Yellow)),
-        );
+    let field = Paragraph::new(format!(" {input}")).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::Yellow)),
+    );
     frame.render_widget(field, rows[2]);
 
     let hint = Paragraph::new(Span::styled(
