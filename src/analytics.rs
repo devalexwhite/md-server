@@ -27,11 +27,18 @@ pub async fn log_request(State(state): State<AppState>, req: Request, next: Next
     }
 
     // Collect what we need before consuming `req`.
-    let referer = req
+    let mut referer = req
         .headers()
         .get("referer")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+
+    if referer.as_deref().map_or(false, |r| {
+        r.starts_with(state.base_url.as_deref().unwrap_or(""))
+    }) {
+        // Don't log internal navigation within the app, which can be very noisy.
+        referer = None;
+    }
 
     let ua_str = req
         .headers()
@@ -74,8 +81,15 @@ pub async fn log_request(State(state): State<AppState>, req: Request, next: Next
 
     // Fire-and-forget: log asynchronously so we never slow down the response.
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::db::insert_request(&db, &path, referer.as_deref(), ip_hash.as_deref(), browser.as_deref(), os.as_deref()).await
+        if let Err(e) = crate::db::insert_request(
+            &db,
+            &path,
+            referer.as_deref(),
+            ip_hash.as_deref(),
+            browser.as_deref(),
+            os.as_deref(),
+        )
+        .await
         {
             tracing::warn!("Failed to log request: {}", e);
         }

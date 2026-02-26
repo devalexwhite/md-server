@@ -161,15 +161,15 @@ pub async fn get_analytics_data(
     // The group-by expression differs per period, so two static SQL strings.
     let traffic_by_period = if days == 1 {
         sqlx::query(
-            "SELECT strftime('%H:00', timestamp) as label, COUNT(*) as count \
+            "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) as label, COUNT(*) as count \
              FROM requests WHERE timestamp >= ? \
-             GROUP BY strftime('%H', timestamp) ORDER BY label ASC",
+             GROUP BY strftime('%Y-%m-%dT%H', timestamp) ORDER BY label ASC",
         )
     } else {
         sqlx::query(
-            "SELECT date(timestamp) as label, COUNT(*) as count \
+            "SELECT strftime('%Y-%m-%dT00:00:00Z', timestamp) as label, COUNT(*) as count \
              FROM requests WHERE timestamp >= ? \
-             GROUP BY label ORDER BY label ASC",
+             GROUP BY date(timestamp) ORDER BY label ASC",
         )
     }
     .bind(&since)
@@ -185,15 +185,15 @@ pub async fn get_analytics_data(
     // Unique visitors grouped by same period.
     let visitors_by_period = if days == 1 {
         sqlx::query(
-            "SELECT strftime('%H:00', timestamp) as label, COUNT(DISTINCT ip_hash) as count \
+            "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) as label, COUNT(DISTINCT ip_hash) as count \
              FROM requests WHERE timestamp >= ? AND ip_hash IS NOT NULL \
-             GROUP BY strftime('%H', timestamp) ORDER BY label ASC",
+             GROUP BY strftime('%Y-%m-%dT%H', timestamp) ORDER BY label ASC",
         )
     } else {
         sqlx::query(
-            "SELECT date(timestamp) as label, COUNT(DISTINCT ip_hash) as count \
+            "SELECT strftime('%Y-%m-%dT00:00:00Z', timestamp) as label, COUNT(DISTINCT ip_hash) as count \
              FROM requests WHERE timestamp >= ? AND ip_hash IS NOT NULL \
-             GROUP BY label ORDER BY label ASC",
+             GROUP BY date(timestamp) ORDER BY label ASC",
         )
     }
     .bind(&since)

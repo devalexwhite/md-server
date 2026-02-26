@@ -1,6 +1,6 @@
-use maud::{html, Markup, PreEscaped, DOCTYPE};
 use super::handlers::urlencoded;
 use crate::db::AnalyticsData;
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 /// A node in the www-root file tree.
 pub enum FileNode {
@@ -25,10 +25,6 @@ fn shell(title: &str, extra_head: Markup, body: Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " — md-server" }
-                link rel="preconnect" href="https://fonts.googleapis.com";
-                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous";
-                link rel="stylesheet"
-                    href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Lora:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap";
                 (extra_head)
                 style { (PreEscaped(BASE_CSS)) }
             }
@@ -356,20 +352,20 @@ fn js_string(s: &str) -> String {
     out.push('"');
     for c in s.chars() {
         match c {
-            '"'           => out.push_str("\\\""),
-            '\\'          => out.push_str("\\\\"),
-            '\n'          => out.push_str("\\n"),
-            '\r'          => out.push_str("\\r"),
-            '\t'          => out.push_str("\\t"),
-            '<'           => out.push_str("\\u003c"),  // prevents </script>
-            '>'           => out.push_str("\\u003e"),
-            '&'           => out.push_str("\\u0026"),
-            '\u{2028}'    => out.push_str("\\u2028"),  // JS line separator
-            '\u{2029}'    => out.push_str("\\u2029"),  // JS paragraph separator
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '<' => out.push_str("\\u003c"), // prevents </script>
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"), // JS line separator
+            '\u{2029}' => out.push_str("\\u2029"), // JS paragraph separator
             c if (c as u32) < 0x20 => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
-            c             => out.push(c),
+            c => out.push(c),
         }
     }
     out.push('"');
@@ -398,13 +394,13 @@ fn chartjs_head() -> Markup {
 }
 
 fn chartjs_init(data: &AnalyticsData, aligned_visitors: &[i64]) -> Markup {
-    let traffic_labels   = js_strings(&data.traffic_by_period);
-    let traffic_values   = js_numbers(&data.traffic_by_period);
-    let visitor_values   = js_numbers_raw(aligned_visitors);
-    let pages_labels     = js_strings(&data.top_pages);
-    let pages_values     = js_numbers(&data.top_pages);
-    let ref_labels       = js_strings(&data.top_referrers);
-    let ref_values       = js_numbers(&data.top_referrers);
+    let traffic_labels = js_strings(&data.traffic_by_period);
+    let traffic_values = js_numbers(&data.traffic_by_period);
+    let visitor_values = js_numbers_raw(aligned_visitors);
+    let pages_labels = js_strings(&data.top_pages);
+    let pages_values = js_numbers(&data.top_pages);
+    let ref_labels = js_strings(&data.top_referrers);
+    let ref_values = js_numbers(&data.top_referrers);
     html! {
         script { (PreEscaped(format!(r#"
 (function () {{
@@ -415,6 +411,17 @@ fn chartjs_init(data: &AnalyticsData, aligned_visitors: &[i64]) -> Markup {
   var MUTED       = '#68718f';
   var GRID        = 'rgba(36,42,61,0.8)';
   var TEXT        = '#dde1ed';
+  var DAYS        = {days};
+
+  // Convert UTC ISO label strings (from the server) to browser-local display strings.
+  function utcToLocal(label) {{
+    var d = new Date(label);
+    if (DAYS === 1) {{
+      return d.toLocaleTimeString([], {{hour: '2-digit', minute: '2-digit'}});
+    }} else {{
+      return d.toLocaleDateString([], {{month: 'short', day: 'numeric'}});
+    }}
+  }}
 
   Chart.defaults.color          = TEXT;
   Chart.defaults.borderColor    = GRID;
@@ -447,7 +454,7 @@ fn chartjs_init(data: &AnalyticsData, aligned_visitors: &[i64]) -> Markup {
   if (trafficEl) {{
     new Chart(trafficEl, {{
       data: {{
-        labels: {traffic_labels},
+        labels: {traffic_labels}.map(utcToLocal),
         datasets: [
           {{
             type: 'bar',
@@ -495,6 +502,7 @@ fn chartjs_init(data: &AnalyticsData, aligned_visitors: &[i64]) -> Markup {
   hBar(document.getElementById('chart-referrers'), {ref_labels},   {ref_values},   GREEN_DIM);
 }})();
 "#,
+            days           = data.days,
             traffic_labels = traffic_labels,
             traffic_values = traffic_values,
             visitor_values = visitor_values,
@@ -653,7 +661,7 @@ const BASE_CSS: &str = r#"
 }
 
 body {
-  font-family: 'Lora', Georgia, serif;
+  font-family: -apple-system, BlinkMacSystemFont, avenir next, avenir, segoe ui, helvetica neue, Adwaita Sans, Cantarell, Ubuntu, roboto, noto, helvetica, arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   height: 100vh;
