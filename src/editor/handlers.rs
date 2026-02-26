@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    css::find_css,
     error::AppError,
     state::AppState,
 };
@@ -131,16 +132,45 @@ pub async fn post_save(
 #[derive(Deserialize)]
 pub struct PreviewForm {
     pub content: String,
+    pub path: String,
 }
 
 pub async fn post_preview(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Form(form): Form<PreviewForm>,
 ) -> Response {
+    let css = css_for_preview_path(&state, &form.path).await;
     // Use safe rendering (no raw HTML passthrough) for the editor preview to
     // prevent XSS from user-controlled markdown content.
     let html = render_markdown_safe(&form.content);
-    Html(html).into_response()
+    Html(template::preview_doc(&html, css.as_deref()).into_string()).into_response()
+}
+
+/// Resolve the CSS URL for a preview request. Unlike `resolve_read_path`, this
+/// tolerates files that don't exist yet (e.g. new unsaved files) by falling
+/// back to canonicalizing the parent directory.
+async fn css_for_preview_path(state: &AppState, rel: &str) -> Option<String> {
+    let rel = sanitize_rel(rel).ok()?;
+    let joined = state.canonical_root.join(&rel);
+    if !joined.starts_with(&state.canonical_root) {
+        return None;
+    }
+
+    // If the file exists, canonicalize it fully; otherwise canonicalize the
+    // parent directory and re-append the filename.
+    let path = match tokio::fs::canonicalize(&joined).await {
+        Ok(p) if p.starts_with(&state.canonical_root) => p,
+        _ => {
+            let parent = joined.parent()?;
+            let canonical_parent = tokio::fs::canonicalize(parent).await.ok()?;
+            if !canonical_parent.starts_with(&state.canonical_root) {
+                return None;
+            }
+            canonical_parent.join(joined.file_name()?)
+        }
+    };
+
+    find_css(&state.canonical_root, &path).await
 }
 
 // ── New file ──────────────────────────────────────────────────────────────────

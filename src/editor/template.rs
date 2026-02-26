@@ -233,15 +233,10 @@ pub fn editor_page(rel_path: &str, content: &str, tree: &[FileNode]) -> Markup {
                             }
                         }
                         div class="pane pane-preview" {
-                            div id="preview"
-                                hx-post="/edit/preview"
-                                hx-trigger="load, editor-change delay:800ms from:#editor-content"
-                                hx-vals="js:{content: getEditorContent()}"
-                                hx-target="#preview"
-                                hx-swap="innerHTML"
-                            {
-                                em { "Loading preview…" }
-                            }
+                            iframe id="preview-frame"
+                                src="about:blank"
+                                title="Preview"
+                            {}
                         }
                     }
                 }
@@ -588,6 +583,97 @@ fn htmx_head() -> Markup {
     }
 }
 
+// ── Preview document ───────────────────────────────────────────────────────────
+
+/// Full HTML document returned to the editor's preview iframe.
+/// When `css` is Some, a `<link>` to the user's style.css is injected.
+/// When None, a fallback stylesheet matching the editor's default preview
+/// appearance is inlined so the preview stays readable.
+pub fn preview_doc(content_html: &str, css: Option<&str>) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                @if let Some(href) = css {
+                    link rel="stylesheet" href=(href);
+                } @else {
+                    style { (PreEscaped(PREVIEW_FALLBACK_CSS)) }
+                }
+            }
+            body {
+                (PreEscaped(content_html))
+            }
+        }
+    }
+}
+
+const PREVIEW_FALLBACK_CSS: &str = r#"
+:root {
+  --bg:      #0d0f14;
+  --surface: #141720;
+  --border:  #242a3d;
+  --text:    #dde1ed;
+  --muted:   #68718f;
+  --accent:  #c9a84c;
+  --accent-hi: #ddbf6a;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, avenir next, avenir, segoe ui, helvetica neue, Adwaita Sans, Cantarell, Ubuntu, roboto, noto, helvetica, arial, sans-serif; 
+  font-size: 1rem;
+  line-height: 1.8;
+  color: var(--text);
+  background: var(--bg);
+  padding: 2rem 2.75rem;
+}
+h1, h2, h3, h4, h5, h6 {
+  font-family: -apple-system, BlinkMacSystemFont, avenir next, avenir, segoe ui, helvetica neue, Adwaita Sans, Cantarell, Ubuntu, roboto, noto, helvetica, arial, sans-serif; 
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+  margin: 1.5em 0 0.5em;
+  color: var(--text);
+}
+h1 { font-size: 1.875rem; font-weight: 800; }
+h2 { font-size: 1.375rem; }
+h3 { font-size: 1.125rem; }
+p { margin: 0.875em 0; }
+pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.125em 1.25em;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+pre code { background: none; border: none; padding: 0; font-size: 0.875em; }
+blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 0.25em 1em;
+  color: var(--muted);
+  margin: 1em 0;
+  font-style: italic;
+}
+a { color: var(--accent); }
+a:hover { color: var(--accent-hi); }
+ul, ol { padding-left: 1.75em; margin: 0.75em 0; }
+li { margin: 0.25em 0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.9375em; }
+th, td { padding: 0.5em 0.875em; border: 1px solid var(--border); text-align: left; }
+th { background: var(--surface); font-family: 'Syne', sans-serif; font-weight: 700; }
+"#;
+
 fn codemirror_head() -> Markup {
     html! {
         link rel="stylesheet" href="https://unpkg.com/codemirror@5.65.17/lib/codemirror.css";
@@ -617,12 +703,36 @@ fn codemirror_init() -> Markup {
     }
   });
 
+  var previewTimer;
+  var pathInput = document.querySelector('#editor-form input[name="path"]');
+
+  function fetchPreview() {
+    var frame = document.getElementById('preview-frame');
+    if (!frame) return;
+    fetch('/edit/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'content=' + encodeURIComponent(cm.getValue())
+           + '&path=' + encodeURIComponent(pathInput ? pathInput.value : '')
+    }).then(function(r) {
+      if (!r.ok) throw new Error('Preview failed (' + r.status + ')');
+      return r.text();
+    }).then(function(html) {
+      frame.srcdoc = html;
+    }).catch(function(err) {
+      frame.srcdoc = '<body style="color:#e05555;font-family:sans-serif;padding:2rem">' + err.message + '</body>';
+    });
+  }
+
   cm.on('change', function () {
     cm.save();
-    htmx.trigger(ta, 'editor-change');
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(fetchPreview, 800);
   });
 
   window.getEditorContent = function () { return cm.getValue(); };
+
+  fetchPreview();
 })();
 "#)) }
     }
@@ -1176,69 +1286,15 @@ body.sidebar-open .sidebar-backdrop { display: block; }
 
 /* ── Preview pane ── */
 .pane-preview {
-  padding: 2rem 2.75rem;
-  font-family: 'Lora', Georgia, serif;
-  font-size: 1rem;
-  line-height: 1.8;
-  color: var(--text);
   background: var(--bg);
-  overflow-y: auto;
+  overflow: hidden;
 }
-.pane-preview::-webkit-scrollbar { width: 4px; }
-.pane-preview::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
-.pane-preview h1,
-.pane-preview h2,
-.pane-preview h3,
-.pane-preview h4,
-.pane-preview h5,
-.pane-preview h6 {
-  font-family: 'Syne', sans-serif;
-  font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: -0.025em;
-  margin: 1.5em 0 0.5em;
-  color: var(--text);
+#preview-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
 }
-.pane-preview h1 { font-size: 1.875rem; font-weight: 800; }
-.pane-preview h2 { font-size: 1.375rem; }
-.pane-preview h3 { font-size: 1.125rem; }
-.pane-preview p { margin: 0.875em 0; }
-.pane-preview pre {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.125em 1.25em;
-  overflow-x: auto;
-  margin: 1em 0;
-}
-.pane-preview code {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.82em;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  padding: 0.15em 0.35em;
-  border-radius: 4px;
-}
-.pane-preview pre code { background: none; border: none; padding: 0; font-size: 0.875em; }
-.pane-preview blockquote {
-  border-left: 3px solid var(--accent);
-  padding: 0.25em 1em;
-  color: var(--muted);
-  margin: 1em 0;
-  font-style: italic;
-}
-.pane-preview a { color: var(--accent); }
-.pane-preview a:hover { color: var(--accent-hi); }
-.pane-preview ul, .pane-preview ol { padding-left: 1.75em; margin: 0.75em 0; }
-.pane-preview li { margin: 0.25em 0; }
-.pane-preview hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
-.pane-preview table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.9375em; }
-.pane-preview th, .pane-preview td {
-  padding: 0.5em 0.875em;
-  border: 1px solid var(--border);
-  text-align: left;
-}
-.pane-preview th { background: var(--surface); font-family: 'Syne', sans-serif; font-weight: 700; }
 
 /* ── Context menu ── */
 .context-menu {
@@ -1384,8 +1440,6 @@ body.sidebar-open .sidebar-backdrop { display: block; }
   .editor-path { display: none; }
   .action-cards { grid-template-columns: 1fr; max-width: 100%; }
   .dashboard { padding: 1.25rem; }
-
-  .pane-preview { padding: 1.25rem 1.5rem; }
 
   .analytics-page { padding: 1.25rem; }
   .stat-cards { grid-template-columns: 1fr; }
