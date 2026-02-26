@@ -1,6 +1,6 @@
 # mdServer
 
-![TUI Server Interface](./screenshots/tui.jpeg)
+![TUI Server Interface](./screenshots/tui.png)
 
 A single-binary Rust web server that turns a directory of Markdown files into a browsable website — no config files, no build step, no database.
 
