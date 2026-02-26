@@ -110,6 +110,10 @@ async fn serve_markdown(
     } = front_matter::parse(&raw);
     front_matter::fill_inferred(&mut front_matter, &content, &real_path).await;
 
+    if front_matter.draft.unwrap_or(false) {
+        return Err(AppError::NotFound);
+    }
+
     let html_body = render_markdown(&content);
     let css = find_css(&state.canonical_root, &real_path).await;
     let meta_image = find_meta_image(&state.canonical_root, &real_path).await;
@@ -278,6 +282,10 @@ async fn collect_dir_entries(
                 content,
             } = front_matter::parse(&raw);
             front_matter::fill_inferred(&mut front_matter, &content, &entry_path).await;
+
+            if let Some(true) = front_matter.draft {
+                continue;
+            }
 
             entries.push(DirEntry {
                 display_name: stem.to_string(),

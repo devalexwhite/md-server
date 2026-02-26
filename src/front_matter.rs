@@ -8,6 +8,7 @@ pub struct FrontMatter {
     pub summary: Option<String>,
     pub author: Option<String>,
     pub date: Option<String>,
+    pub draft: Option<bool>,
 }
 
 pub struct ParsedDoc {
@@ -31,7 +32,7 @@ pub fn parse(raw: &str) -> ParsedDoc {
             return ParsedDoc {
                 front_matter: FrontMatter::default(),
                 content: text.to_string(),
-            }
+            };
         }
     };
 
@@ -93,6 +94,9 @@ pub async fn fill_inferred(fm: &mut FrontMatter, content: &str, path: &Path) {
     if fm.date.is_none() {
         fm.date = infer_date(path).await;
     }
+    if fm.draft.is_none() {
+        fm.draft = Some(false);
+    }
 }
 
 /// Infer a title from the first `# Heading` in the content.
@@ -134,9 +138,8 @@ pub fn infer_summary(content: &str) -> Option<String> {
         }
 
         // A Setext underline is a non-empty line of all `=` or `-` that follows text.
-        let is_setext_underline = prev_was_text
-            && !trimmed.is_empty()
-            && trimmed.chars().all(|c| c == '=' || c == '-');
+        let is_setext_underline =
+            prev_was_text && !trimmed.is_empty() && trimmed.chars().all(|c| c == '=' || c == '-');
 
         if trimmed.is_empty() {
             if in_para {

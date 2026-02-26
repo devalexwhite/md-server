@@ -13,6 +13,7 @@ use std::{
 use crate::{
     css::find_css,
     error::AppError,
+    front_matter::{self, ParsedDoc},
     state::AppState,
 };
 
@@ -57,7 +58,10 @@ pub async fn get_analytics(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("analytics query failed: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html("Analytics unavailable.".to_string()))
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("Analytics unavailable.".to_string()),
+            )
                 .into_response();
         }
     };
@@ -83,9 +87,7 @@ pub async fn get_editor(
 
     let content = match tokio::fs::read_to_string(&fs_path).await {
         Ok(c) => c,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return AppError::NotFound.into_response()
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return AppError::NotFound.into_response(),
         Err(e) => return AppError::Io(e).into_response(),
     };
 
@@ -105,10 +107,7 @@ pub struct SaveForm {
     pub content: String,
 }
 
-pub async fn post_save(
-    State(state): State<AppState>,
-    Form(form): Form<SaveForm>,
-) -> Response {
+pub async fn post_save(State(state): State<AppState>, Form(form): Form<SaveForm>) -> Response {
     let fs_path = match resolve_write_path(&state, &form.path).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -142,7 +141,13 @@ pub async fn post_preview(
     let css = css_for_preview_path(&state, &form.path).await;
     // Use safe rendering (no raw HTML passthrough) for the editor preview to
     // prevent XSS from user-controlled markdown content.
-    let html = render_markdown_safe(&form.content);
+
+    let ParsedDoc {
+        front_matter: _,
+        content,
+    } = front_matter::parse(&form.content);
+
+    let html = render_markdown_safe(&content);
     Html(template::preview_doc(&html, css.as_deref()).into_string()).into_response()
 }
 
@@ -212,7 +217,7 @@ pub async fn post_new_file(
         }
     }
 
-    if let Err(e) = tokio::fs::write(&fs_path, b"").await {
+    if let Err(e) = tokio::fs::write(&fs_path, b"---\ndraft: true\n---\n").await {
         return AppError::Io(e).into_response();
     }
 
@@ -226,10 +231,7 @@ pub struct NewDirForm {
     pub path: String,
 }
 
-pub async fn post_new_dir(
-    State(state): State<AppState>,
-    Form(form): Form<NewDirForm>,
-) -> Response {
+pub async fn post_new_dir(State(state): State<AppState>, Form(form): Form<NewDirForm>) -> Response {
     let fs_path = match resolve_write_path(&state, &form.path).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -264,9 +266,7 @@ pub async fn delete_file(
 
     let meta = match tokio::fs::metadata(&fs_path).await {
         Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return AppError::NotFound.into_response()
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return AppError::NotFound.into_response(),
         Err(e) => return AppError::Io(e).into_response(),
     };
 
@@ -291,10 +291,7 @@ pub struct RenameForm {
     pub new_path: String,
 }
 
-pub async fn post_rename(
-    State(state): State<AppState>,
-    Form(form): Form<RenameForm>,
-) -> Response {
+pub async fn post_rename(State(state): State<AppState>, Form(form): Form<RenameForm>) -> Response {
     let src = match resolve_read_path(&state, &form.old_path).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -362,7 +359,9 @@ async fn resolve_write_path(state: &AppState, rel: &str) -> Result<PathBuf, Resp
         return Err(AppError::NotFound.into_response());
     }
 
-    let parent = joined.parent().ok_or_else(|| AppError::NotFound.into_response())?;
+    let parent = joined
+        .parent()
+        .ok_or_else(|| AppError::NotFound.into_response())?;
     let file_name = joined
         .file_name()
         .ok_or_else(|| AppError::NotFound.into_response())?
@@ -420,11 +419,7 @@ pub async fn build_file_tree(root: &Path, dir: &Path) -> io::Result<Vec<FileNode
     build_file_tree_inner(root, dir, 0).await
 }
 
-async fn build_file_tree_inner(
-    root: &Path,
-    dir: &Path,
-    depth: usize,
-) -> io::Result<Vec<FileNode>> {
+async fn build_file_tree_inner(root: &Path, dir: &Path, depth: usize) -> io::Result<Vec<FileNode>> {
     if depth >= MAX_TREE_DEPTH {
         return Ok(Vec::new());
     }
@@ -453,7 +448,11 @@ async fn build_file_tree_inner(
 
         if ft.is_dir() {
             let children = Box::pin(build_file_tree_inner(root, &path, depth + 1)).await?;
-            nodes.push(FileNode::Dir { name, rel, children });
+            nodes.push(FileNode::Dir {
+                name,
+                rel,
+                children,
+            });
         } else if ft.is_file() {
             nodes.push(FileNode::File { name, rel });
         }
