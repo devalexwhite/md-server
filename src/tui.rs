@@ -601,7 +601,7 @@ fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_title(frame: &mut Frame, area: Rect) {
-    let title = Paragraph::new("md-server")
+    let title = Paragraph::new("mdServer")
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL))
         .style(

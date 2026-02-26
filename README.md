@@ -4,7 +4,7 @@
 
 A single-binary Rust web server that turns a directory of Markdown files into a browsable website — no config files, no build step, no database.
 
-Drop `.md` files in a folder. Point `md-server` at it. Done.
+Drop `.md` files in a folder. Point `mdServer` at it. Done.
 
 ## Features
 

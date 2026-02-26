@@ -24,7 +24,7 @@ fn shell(title: &str, extra_head: Markup, body: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (title) " — md-server" }
+                title { (title) " — mdServer" }
                 (extra_head)
                 style { (PreEscaped(BASE_CSS)) }
             }
