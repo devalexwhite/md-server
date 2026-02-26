@@ -198,6 +198,12 @@ pub fn editor_page(rel_path: &str, content: &str, tree: &[FileNode]) -> Markup {
                         span class="editor-path" { (rel_path) }
                         span id="save-status" class="save-status" {}
                         button
+                          id="toolbar-save"
+                          class="toolbar-btn"
+                          type="button"
+                          data-path=(rel_path)
+                        { "Save" }
+                        button
                             id="toolbar-rename"
                             class="toolbar-btn"
                             type="button"
@@ -1217,6 +1223,14 @@ body.sidebar-open .sidebar-backdrop { display: block; }
   cursor: pointer;
   white-space: nowrap;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
+
+  &#toolbar-save {
+    padding: 0.375rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 700;
+    background: var(--accent);
+    color: #0d0f14;
+  }
 }
 .toolbar-btn:hover { color: var(--text); border-color: var(--border-hi); background: var(--surface-2); }
 .toolbar-btn-danger { color: var(--muted); }
@@ -1607,6 +1621,19 @@ const UI_JS: &str = r#"
   });
 
   // ── Editor toolbar buttons ─────────────────────────────────────────────────
+  var saveBtn = document.getElementById('toolbar-save');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function () {
+      if (window.getEditorContent) {
+        var ta = document.getElementById('editor-content');
+        if (ta && ta.nextSibling && ta.nextSibling.CodeMirror) {
+          ta.nextSibling.CodeMirror.save();
+          htmx.trigger(ta, 'save-shortcut');
+        }
+      }
+    });
+  }
+
   var renameBtn = document.getElementById('toolbar-rename');
   if (renameBtn) {
     renameBtn.addEventListener('click', function () {
