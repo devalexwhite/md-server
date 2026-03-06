@@ -92,6 +92,51 @@ async fn init_schema(pool: &SqlitePool) -> Result<()> {
         .await
         .context("Failed to create requests index")?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS micropub_tokens (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT    NOT NULL,
+            token_hash TEXT    NOT NULL UNIQUE,
+            scope      TEXT    NOT NULL DEFAULT 'create update delete media',
+            created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+            last_used  TEXT
+        )",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create micropub_tokens table")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_micropub_tokens_hash ON micropub_tokens(token_hash)",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create micropub_tokens index")?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS micropub_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to create micropub_settings table")?;
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO micropub_settings (key, value) VALUES ('post_dir', 'posts')",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to seed post_dir setting")?;
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO micropub_settings (key, value) VALUES ('media_dir', '_media')",
+    )
+    .execute(pool)
+    .await
+    .context("Failed to seed media_dir setting")?;
+
     Ok(())
 }
 
@@ -303,6 +348,120 @@ pub async fn add_user(pool: &SqlitePool, username: &str, password: &str) -> Resu
         .execute(pool)
         .await
         .context("Failed to insert user — username may already exist")?;
+    Ok(())
+}
+
+// ── Micropub tokens ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MicropubToken {
+    pub id: i64,
+    pub name: String,
+    pub scope: String,
+    pub created_at: String,
+    pub last_used: Option<String>,
+}
+
+/// The minimal record returned after a successful token verification.
+#[derive(Debug, Clone)]
+pub struct TokenRecord {
+    pub id: i64,
+    pub scope: String,
+}
+
+/// Verify a raw bearer token by its SHA-256 hash.
+/// Updates `last_used` timestamp on success. Returns None if not found.
+pub async fn verify_micropub_token(pool: &SqlitePool, token_hash: &str) -> Result<Option<TokenRecord>> {
+    let row = sqlx::query(
+        "UPDATE micropub_tokens SET last_used = datetime('now')
+         WHERE token_hash = ?
+         RETURNING id, scope",
+    )
+    .bind(token_hash)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to verify micropub token")?;
+
+    Ok(row.map(|r| TokenRecord {
+        id: r.get::<i64, _>("id"),
+        scope: r.get::<String, _>("scope"),
+    }))
+}
+
+/// Store a new token (only the SHA-256 hash is persisted, never the raw token).
+pub async fn create_micropub_token(
+    pool: &SqlitePool,
+    name: &str,
+    token_hash: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO micropub_tokens (name, token_hash) VALUES (?, ?)",
+    )
+    .bind(name)
+    .bind(token_hash)
+    .execute(pool)
+    .await
+    .context("Failed to create micropub token")?;
+    Ok(())
+}
+
+/// List all tokens (without hashes — they are never returned).
+pub async fn list_micropub_tokens(pool: &SqlitePool) -> Result<Vec<MicropubToken>> {
+    let rows = sqlx::query(
+        "SELECT id, name, scope, created_at, last_used FROM micropub_tokens ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to list micropub tokens")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| MicropubToken {
+            id: r.get::<i64, _>("id"),
+            name: r.get::<String, _>("name"),
+            scope: r.get::<String, _>("scope"),
+            created_at: r.get::<String, _>("created_at"),
+            last_used: r.get::<Option<String>, _>("last_used"),
+        })
+        .collect())
+}
+
+/// Revoke (delete) a token by its database ID.
+pub async fn delete_micropub_token(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM micropub_tokens WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to delete micropub token")?;
+    Ok(())
+}
+
+// ── Micropub settings ─────────────────────────────────────────────────────────
+
+/// Retrieve a single Micropub setting by key. Returns the value or a default.
+pub async fn get_micropub_setting(pool: &SqlitePool, key: &str) -> Result<String> {
+    let row = sqlx::query("SELECT value FROM micropub_settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to read micropub setting")?;
+
+    Ok(row
+        .map(|r| r.get::<String, _>("value"))
+        .unwrap_or_default())
+}
+
+/// Upsert a Micropub setting.
+pub async fn set_micropub_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO micropub_settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await
+    .context("Failed to set micropub setting")?;
     Ok(())
 }
 

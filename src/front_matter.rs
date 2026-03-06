@@ -1,14 +1,28 @@
 use chrono::{DateTime, Local};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Deserialize, Serialize, Default, Debug, Clone)]
 pub struct FrontMatter {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+}
+
+/// Serialize a FrontMatter struct + markdown content back into a complete .md file string.
+/// Used by Micropub create and update operations. Returns Err if YAML serialization fails.
+pub fn write_front_matter(fm: &FrontMatter, content: &str) -> Result<String, String> {
+    let yaml = serde_yml::to_string(fm).map_err(|e| e.to_string())?;
+    Ok(format!("---\n{}---\n{}", yaml, content))
 }
 
 pub struct ParsedDoc {

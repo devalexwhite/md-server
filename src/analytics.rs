@@ -21,8 +21,13 @@ fn is_trusted_proxy(ip: IpAddr) -> bool {
 pub async fn log_request(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
 
-    // Skip health check and all editor routes.
-    if path == "/healthz" || path == "/edit" || path.starts_with("/edit/") {
+    // Skip health check, editor routes, and micropub API routes.
+    if path == "/healthz"
+        || path == "/edit"
+        || path.starts_with("/edit/")
+        || path == "/micropub"
+        || path.starts_with("/micropub/")
+    {
         return next.run(req).await;
     }
 

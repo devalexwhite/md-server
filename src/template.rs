@@ -73,6 +73,7 @@ pub fn page(
     css_path: Option<&str>,
     meta_image: Option<&str>,
     breadcrumbs: &[Breadcrumb],
+    micropub_url: Option<&str>,
 ) -> Markup {
     let title = fm.title.as_deref().unwrap_or("");
     html! {
@@ -102,6 +103,9 @@ pub fn page(
                 }
                 @if let Some(css) = css_path {
                     link rel="stylesheet" href=(css);
+                }
+                @if let Some(mp) = micropub_url {
+                    link rel="micropub" href=(mp);
                 }
             }
             body {

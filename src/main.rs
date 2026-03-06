@@ -6,6 +6,7 @@ mod error;
 mod front_matter;
 mod handler;
 mod log_capture;
+mod micropub;
 mod rss;
 mod state;
 mod template;
@@ -152,6 +153,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Redirect /edit/ → /edit to avoid the matchit empty-catchall gap.
         .route("/edit/", get(|| async { Redirect::permanent("/edit") }))
         .merge(editor::router(state.clone()))
+        .merge(micropub::router(state.clone()))
         .fallback(handler::handle)
         // Analytics middleware — skips /healthz and /edit/* internally.
         .layer(middleware::from_fn_with_state(

@@ -1,4 +1,4 @@
-mod handlers;
+pub(crate) mod handlers;
 mod template;
 
 use axum::{
@@ -38,6 +38,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/edit/new-dir", post(handlers::post_new_dir))
         .route("/edit/delete", delete(handlers::delete_file))
         .route("/edit/rename", post(handlers::post_rename))
+        .route("/edit/settings", get(handlers::get_settings))
+        .route("/edit/settings/token", post(handlers::post_create_token))
+        .route("/edit/settings/token/delete", post(handlers::post_delete_token))
+        .route("/edit/settings/post-dir", post(handlers::post_set_post_dir))
+        .route("/edit/settings/media-dir", post(handlers::post_set_media_dir))
         .route("/edit/logout", post(post_logout))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
         .route_layer(middleware::from_fn_with_state(state, require_auth));

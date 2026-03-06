@@ -12,8 +12,10 @@ use std::{
 
 use crate::{
     css::find_css,
+    db,
     error::AppError,
     front_matter::{self, ParsedDoc},
+    micropub,
     state::AppState,
 };
 
@@ -328,7 +330,7 @@ pub async fn post_rename(State(state): State<AppState>, Form(form): Form<RenameF
 
 /// Resolve a client-supplied relative path for **reading** (file must exist).
 /// Calls `canonicalize` to block symlink escapes, matching `handler.rs::validate_path`.
-async fn resolve_read_path(state: &AppState, rel: &str) -> Result<PathBuf, Response> {
+pub(crate) async fn resolve_read_path(state: &AppState, rel: &str) -> Result<PathBuf, Response> {
     let rel = sanitize_rel(rel)?;
     let joined = state.canonical_root.join(&rel);
 
@@ -350,7 +352,7 @@ async fn resolve_read_path(state: &AppState, rel: &str) -> Result<PathBuf, Respo
 /// Resolve a client-supplied relative path for **writing** (file may not exist).
 /// Canonicalizes the **parent** directory to block symlink escapes, then
 /// re-appends the sanitized filename.
-async fn resolve_write_path(state: &AppState, rel: &str) -> Result<PathBuf, Response> {
+pub(crate) async fn resolve_write_path(state: &AppState, rel: &str) -> Result<PathBuf, Response> {
     let rel = sanitize_rel(rel)?;
     let joined = state.canonical_root.join(&rel);
 
@@ -483,4 +485,103 @@ fn render_markdown_safe(content: &str) -> String {
 /// Percent-encode a path for safe use in URL query strings.
 pub fn urlencoded(s: &str) -> String {
     percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+// ── Micropub settings ─────────────────────────────────────────────────────────
+
+pub async fn get_settings(State(state): State<AppState>) -> Response {
+    render_settings_page(&state, None).await
+}
+
+/// Render the settings page, optionally showing a newly-created token.
+async fn render_settings_page(state: &AppState, new_token: Option<&str>) -> Response {
+    let (tokens_result, post_dir_result, media_dir_result, tree_result) = tokio::join!(
+        db::list_micropub_tokens(&state.db),
+        db::get_micropub_setting(&state.db, "post_dir"),
+        db::get_micropub_setting(&state.db, "media_dir"),
+        build_file_tree(&state.canonical_root, &state.canonical_root),
+    );
+
+    let tokens = tokens_result.unwrap_or_default();
+    let post_dir = post_dir_result.unwrap_or_else(|_| "posts".to_string());
+    let media_dir = media_dir_result.unwrap_or_else(|_| "_media".to_string());
+    let tree = tree_result.unwrap_or_default();
+
+    Html(
+        template::settings_page(&tree, &tokens, &post_dir, &media_dir, new_token).into_string(),
+    )
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CreateTokenForm {
+    pub name: String,
+}
+
+/// Create a new API token, then render the settings page with the raw token
+/// displayed once (it is never stored — only the SHA-256 hash is in the DB).
+pub async fn post_create_token(
+    State(state): State<AppState>,
+    Form(form): Form<CreateTokenForm>,
+) -> Response {
+    let name = form.name.trim().to_string();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, Html("Token name cannot be empty.".to_string()))
+            .into_response();
+    }
+
+    let raw_token = micropub::new_token();
+    let hash = micropub::sha256_hex(&raw_token);
+
+    if let Err(e) = db::create_micropub_token(&state.db, &name, &hash).await {
+        tracing::error!("Failed to create micropub token: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html("Failed to create token.".to_string()),
+        )
+            .into_response();
+    }
+
+    render_settings_page(&state, Some(&raw_token)).await
+}
+
+#[derive(Deserialize)]
+pub struct DeleteTokenForm {
+    pub id: i64,
+}
+
+pub async fn post_delete_token(
+    State(state): State<AppState>,
+    Form(form): Form<DeleteTokenForm>,
+) -> Response {
+    db::delete_micropub_token(&state.db, form.id).await.ok();
+    Redirect::to("/edit/settings").into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SettingForm {
+    pub value: String,
+}
+
+pub async fn post_set_post_dir(
+    State(state): State<AppState>,
+    Form(form): Form<SettingForm>,
+) -> Response {
+    set_micropub_dir_setting(&state, "post_dir", &form.value).await
+}
+
+pub async fn post_set_media_dir(
+    State(state): State<AppState>,
+    Form(form): Form<SettingForm>,
+) -> Response {
+    set_micropub_dir_setting(&state, "media_dir", &form.value).await
+}
+
+async fn set_micropub_dir_setting(state: &AppState, key: &str, raw: &str) -> Response {
+    let value = raw.trim().to_string();
+    if value.contains("..") || value.starts_with('/') {
+        return (StatusCode::BAD_REQUEST, Html("Invalid path value.".to_string())).into_response();
+    }
+    db::set_micropub_setting(&state.db, key, &value).await.ok();
+    Redirect::to("/edit/settings").into_response()
 }

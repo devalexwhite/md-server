@@ -121,15 +121,32 @@ async fn serve_markdown(
     if let (Some(last), Some(title)) = (breadcrumbs.last_mut(), front_matter.title.as_deref()) {
         last.label = title.to_string();
     }
+
+    // Build the Micropub endpoint URL for discovery (only when base_url is set).
+    let micropub_url = state
+        .base_url
+        .as_deref()
+        .map(|base| format!("{}/micropub", base.trim_end_matches('/')));
+
     let markup = template::page(
         &front_matter,
         &html_body,
         css.as_deref(),
         meta_image.as_deref(),
         &breadcrumbs,
+        micropub_url.as_deref(),
     );
 
-    Ok(Html(markup.into_string()).into_response())
+    let mut response = Html(markup.into_string()).into_response();
+
+    // Emit Link: </micropub>; rel="micropub" header per Micropub spec §5.3.
+    if let Some(ref mp) = micropub_url {
+        if let Ok(val) = header::HeaderValue::from_str(&format!("<{}>; rel=\"micropub\"", mp)) {
+            response.headers_mut().insert("Link", val);
+        }
+    }
+
+    Ok(response)
 }
 
 async fn serve_directory(

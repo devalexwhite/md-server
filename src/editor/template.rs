@@ -1,5 +1,5 @@
 use super::handlers::urlencoded;
-use crate::db::AnalyticsData;
+use crate::db::{AnalyticsData, MicropubToken};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 /// A node in the www-root file tree.
@@ -137,7 +137,7 @@ pub fn dashboard(tree: &[FileNode]) -> Markup {
         htmx_head(),
         html! {
             div class="layout" {
-                (sidebar(tree, None, false))
+                (sidebar(tree, None, false, false))
                 main class="main-content" {
                     div class="page-topbar" {
                         button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
@@ -189,7 +189,7 @@ pub fn editor_page(rel_path: &str, content: &str, tree: &[FileNode]) -> Markup {
         },
         html! {
             div class="layout" {
-                (sidebar(tree, Some(rel_path), false))
+                (sidebar(tree, Some(rel_path), false, false))
                 main class="main-content editor-main" {
                     div class="editor-toolbar" {
                         button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
@@ -272,7 +272,7 @@ pub fn analytics_page(tree: &[FileNode], data: &AnalyticsData) -> Markup {
         chartjs_head(),
         html! {
             div class="layout" {
-                (sidebar(tree, None, true))
+                (sidebar(tree, None, true, false))
                 main class="main-content" {
                     div class="page-topbar" {
                         button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
@@ -515,9 +515,132 @@ fn chartjs_init(data: &AnalyticsData, aligned_visitors: &[i64]) -> Markup {
     }
 }
 
+// ── Settings page ──────────────────────────────────────────────────────────────
+
+pub fn settings_page(
+    tree: &[FileNode],
+    tokens: &[MicropubToken],
+    post_dir: &str,
+    media_dir: &str,
+    new_token: Option<&str>,
+) -> Markup {
+    shell(
+        "Settings",
+        html! {},
+        html! {
+            div class="layout" {
+                (sidebar(tree, None, false, true))
+                main class="main-content" {
+                    div class="page-topbar" {
+                        button id="sidebar-toggle" class="hamburger" type="button" aria-label="Toggle sidebar" {
+                            (PreEscaped(HAMBURGER_SVG))
+                        }
+                        span class="topbar-title" { "Settings" }
+                    }
+                    div class="settings-page" {
+                        // ── New token reveal ──────────────────────────────────
+                        @if let Some(tok) = new_token {
+                            div class="token-reveal" {
+                                p class="token-reveal-label" {
+                                    "Token created. Copy it now — it will not be shown again."
+                                }
+                                div class="token-reveal-row" {
+                                    code id="new-token-val" class="token-reveal-code" { (tok) }
+                                    button class="token-copy-btn" type="button"
+                                        onclick="copyToken()" { "Copy" }
+                                }
+                            }
+                        }
+
+                        // ── Micropub settings ─────────────────────────────────
+                        section class="settings-section" {
+                            h3 class="settings-heading" { "Micropub" }
+                            div class="settings-group" {
+                                div class="settings-row" {
+                                    label class="settings-label" for="post-dir" { "Post directory" }
+                                    form method="post" action="/edit/settings/post-dir"
+                                        class="settings-inline-form"
+                                    {
+                                        input id="post-dir" class="settings-input" type="text"
+                                            name="value" value=(post_dir) required;
+                                        button class="settings-save-btn" type="submit" { "Save" }
+                                    }
+                                }
+                                div class="settings-row" {
+                                    label class="settings-label" for="media-dir" { "Media directory" }
+                                    form method="post" action="/edit/settings/media-dir"
+                                        class="settings-inline-form"
+                                    {
+                                        input id="media-dir" class="settings-input" type="text"
+                                            name="value" value=(media_dir) required;
+                                        button class="settings-save-btn" type="submit" { "Save" }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── API tokens ────────────────────────────────────────
+                        section class="settings-section" {
+                            h3 class="settings-heading" { "API Tokens" }
+                            div class="settings-group" {
+                                form method="post" action="/edit/settings/token"
+                                    class="token-create-form"
+                                {
+                                    input class="settings-input" type="text" name="name"
+                                        placeholder="Token name" required;
+                                    button class="settings-save-btn" type="submit" { "Generate" }
+                                }
+                                @if tokens.is_empty() {
+                                    p class="settings-empty" { "No tokens yet." }
+                                } @else {
+                                    div class="token-list" {
+                                        @for tok in tokens {
+                                            div class="token-row" {
+                                                div class="token-info" {
+                                                    span class="token-name" { (tok.name) }
+                                                    span class="token-meta" {
+                                                        "scope: " (tok.scope)
+                                                        " · created " (tok.created_at)
+                                                        @if let Some(ref lu) = tok.last_used {
+                                                            " · last used " (lu)
+                                                        } @else {
+                                                            " · never used"
+                                                        }
+                                                    }
+                                                }
+                                                form method="post" action="/edit/settings/token/delete"
+                                                    class="token-revoke-form"
+                                                {
+                                                    input type="hidden" name="id" value=(tok.id);
+                                                    button class="token-revoke-btn" type="submit" { "Revoke" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            script { (PreEscaped(r#"
+function copyToken() {
+  var val = document.getElementById('new-token-val').textContent;
+  navigator.clipboard.writeText(val).then(function() {
+    var btn = document.querySelector('.token-copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+  });
+}
+"#)) }
+        },
+    )
+}
+
 // ── Sidebar ────────────────────────────────────────────────────────────────────
 
-fn sidebar(tree: &[FileNode], active: Option<&str>, analytics_active: bool) -> Markup {
+fn sidebar(tree: &[FileNode], active: Option<&str>, analytics_active: bool, settings_active: bool) -> Markup {
+    let content_active = !analytics_active && !settings_active;
     html! {
         aside class="sidebar" {
             div class="sidebar-header" {
@@ -527,13 +650,17 @@ fn sidebar(tree: &[FileNode], active: Option<&str>, analytics_active: bool) -> M
                 }
             }
             div class="sidebar-nav" {
-                a href="/edit" class=(if !analytics_active { "snav-link active" } else { "snav-link" }) {
+                a href="/edit" class=(if content_active { "snav-link active" } else { "snav-link" }) {
                     (PreEscaped(r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>"#))
                     " Content"
                 }
                 a href="/edit/analytics" class=(if analytics_active { "snav-link active" } else { "snav-link" }) {
                     (PreEscaped(r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>"#))
                     " Analytics"
+                }
+                a href="/edit/settings" class=(if settings_active { "snav-link active" } else { "snav-link" }) {
+                    (PreEscaped(r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#))
+                    " Settings"
                 }
             }
             nav class="file-tree" {
@@ -1431,6 +1558,189 @@ body.sidebar-open .sidebar-backdrop { display: block; }
   gap: 1rem;
 }
 
+/* ── Settings ── */
+.settings-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2.5rem;
+  max-width: 700px;
+}
+.settings-section {
+  margin-bottom: 2.5rem;
+}
+.settings-heading {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.settings-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.settings-row:last-child { border-bottom: none; }
+.settings-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 140px;
+  flex-shrink: 0;
+}
+.settings-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex: 1;
+}
+.settings-input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.settings-input:focus { border-color: var(--accent); }
+.settings-empty {
+  padding: 0.875rem 1.25rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.settings-save-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.875rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.settings-save-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Token create form */
+.token-create-form {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Token list */
+.token-list { }
+.token-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  gap: 1rem;
+}
+.token-row:last-child { border-bottom: none; }
+.token-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.token-name {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.token-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.token-revoke-form { flex-shrink: 0; }
+.token-revoke-btn {
+  background: transparent;
+  border: 1px solid #5a2020;
+  border-radius: 6px;
+  padding: 0.35rem 0.75rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #c04040;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.token-revoke-btn:hover { background: #3a1515; border-color: #c04040; }
+
+/* New token reveal box */
+.token-reveal {
+  background: #0b1208;
+  border: 1px solid #2a4a1a;
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 2rem;
+}
+.token-reveal-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #7ab86a;
+  margin-bottom: 0.875rem;
+}
+.token-reveal-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.token-reveal-code {
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  color: #a0e090;
+  background: #060d04;
+  border: 1px solid #2a4a1a;
+  border-radius: 6px;
+  padding: 0.6rem 0.875rem;
+  word-break: break-all;
+  overflow-x: auto;
+  white-space: pre;
+}
+.token-copy-btn {
+  background: transparent;
+  border: 1px solid #2a4a1a;
+  border-radius: 6px;
+  padding: 0.4rem 0.875rem;
+  font-family: 'Syne', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #7ab86a;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.token-copy-btn:hover { background: #142010; }
+
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {
   :root { --sidebar-w: 280px; }
@@ -1458,6 +1768,13 @@ body.sidebar-open .sidebar-backdrop { display: block; }
   .analytics-page { padding: 1.25rem; }
   .stat-cards { grid-template-columns: 1fr; }
   .charts-grid { grid-template-columns: 1fr; }
+
+  .settings-page { padding: 1.25rem; }
+  .settings-section { margin-bottom: 2rem; }
+  .settings-row { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+  .settings-inline-form { flex-direction: column; width: 100%; gap: 0.5rem; }
+  .settings-input { width: 100%; }
+  .token-create-form { flex-direction: column; gap: 0.5rem; }
 }
 "#;
 
