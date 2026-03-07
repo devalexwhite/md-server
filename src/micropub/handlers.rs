@@ -138,6 +138,11 @@ async fn handle_source_query(state: &AppState, url: &str) -> Response {
                 .map(|d| vec![d.to_string()])
                 .unwrap_or_default(),
             url: vec![canonical_url],
+            post_status: if front_matter.draft.unwrap_or(false) {
+                "draft".to_string()
+            } else {
+                "published".to_string()
+            },
         },
     };
 
@@ -271,10 +276,11 @@ async fn handle_create(state: &AppState, entry: CreateEntry) -> Response {
         .map(normalize_date)
         .unwrap_or(date_str);
 
+    let is_draft = entry.post_status.as_deref().map(str::to_lowercase).as_deref() == Some("draft");
     let fm = FrontMatter {
         title: entry.name.clone(),
         date: Some(published_date),
-        draft: Some(false),
+        draft: Some(is_draft),
         tags: if entry.tags.is_empty() {
             None
         } else {
@@ -442,7 +448,7 @@ fn apply_property(
         }
         "post-status" => {
             if let Some(v) = values.first().and_then(|v| v.as_str()) {
-                fm.draft = Some(v == "draft");
+                fm.draft = Some(v.to_lowercase() == "draft");
             }
         }
         "summary" => {
@@ -542,6 +548,7 @@ fn parse_form_body(body: &[u8]) -> Result<MicropubRequest, Response> {
                 tags: get_all("category"),
                 slug: get("mp-slug"),
                 published: get("published"),
+                post_status: get("post-status"),
             }))
         }
         Some("update") => {
@@ -699,6 +706,7 @@ fn parse_json_create(v: serde_json::Value) -> Result<MicropubRequest, Response> 
         tags: all_strs("category"),
         slug: first_str("mp-slug"),
         published: first_str("published"),
+        post_status: first_str("post-status"),
     }))
 }
 

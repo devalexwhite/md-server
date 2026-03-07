@@ -25,6 +25,8 @@ pub struct CreateEntry {
     pub slug: Option<String>,
     /// ISO 8601 publication date. Defaults to today if absent.
     pub published: Option<String>,
+    /// Micropub `post-status`: `"draft"` or `"published"`. Defaults to `"published"`.
+    pub post_status: Option<String>,
 }
 
 /// JSON update request body (POST with `"action": "update"`).
@@ -96,4 +98,6 @@ pub struct SourceProperties {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub published: Vec<String>,
     pub url: Vec<String>,
+    #[serde(rename = "post-status")]
+    pub post_status: String,
 }
